@@ -1,5 +1,5 @@
-# AICharacterChat
-character_settings
+# AINovelChat
+settings.ini
 models
 venv
 last_loaded.json

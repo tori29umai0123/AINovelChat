@@ -1,0 +1,2 @@
+gradio==4.41.0
+https://github.com/abetlen/llama-cpp-python/releases/download/v0.2.86-cu121/llama_cpp_python-0.2.86-cp310-cp310-win_amd64.whl

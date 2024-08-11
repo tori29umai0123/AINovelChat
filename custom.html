@@ -1,0 +1,12 @@
+<script>
+    function adjustChatbotHeight() {
+        var chatbot = document.querySelector('#chatbot');
+        if (chatbot) {
+            chatbot.style.height = window.innerHeight * 0.5 + 'px';
+        }
+    }
+    
+    // ページ読み込み時と画面サイズ変更時にチャットボットの高さを調整
+    window.addEventListener('load', adjustChatbotHeight);
+    window.addEventListener('resize', adjustChatbotHeight);
+    </script>
