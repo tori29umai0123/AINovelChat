@@ -89,8 +89,10 @@ class Settings:
     def _parse_config(config):
         settings = {}
         if 'Character' in config:
-            settings['instructions'] = config['Character'].get('instructions', '')
+            settings['chat_author_description'] = config['Character'].get('chat_author_description', '')
+            settings['chat_instructions'] = config['Character'].get('chat_instructions', '')
             settings['example_qa'] = config['Character'].get('example_qa', '').split('\n')
+            settings['gen_author_description'] = config['Character'].get('gen_author_description', '')
         if 'Models' in config:
             settings['DEFAULT_CHAT_MODEL'] = config['Models'].get('DEFAULT_CHAT_MODEL', '')
             settings['DEFAULT_GEN_MODEL'] = config['Models'].get('DEFAULT_GEN_MODEL', '')
@@ -112,8 +114,10 @@ class Settings:
     def save_to_ini(settings, filename):
         config = configparser.ConfigParser()
         config['Character'] = {
-            'instructions': settings.get('instructions', ''),
+            'chat_author_description': settings.get('chat_author_description', ''),
+            'chat_instructions': settings.get('chat_instructions', ''),
             'example_qa': '\n'.join(settings.get('example_qa', [])),
+            'gen_author_description': settings.get('gen_author_description', '')
         }
         config['Models'] = {
             'DEFAULT_CHAT_MODEL': settings.get('DEFAULT_CHAT_MODEL', ''),
@@ -138,7 +142,8 @@ class Settings:
     @staticmethod
     def create_default_ini(filename):
         default_settings = {
-            'instructions': "丁寧な敬語でアイディアのヒアリングしてください。物語をより面白くする提案、キャラクター造形の考察、世界観を膨らませる手伝いなどをお願いします。求められた時以外は基本、聞き役に徹してユーザー自身に言語化させるよう促してください。ユーザーのことは『ユーザー』と呼んでください。",
+            'chat_author_description': "あなたは優秀な小説執筆アシスタントです。三幕構造や起承転結、劇中劇などのあらゆる小説理論や小説技法にも通じています。",
+            'chat_instructions': "丁寧な敬語でアイディアのヒアリングしてください。物語をより面白くする提案、キャラクター造形の考察、世界観を膨らませる手伝いなどをお願いします。求められた時以外は基本、聞き役に徹してユーザー自身に言語化させるよう促してください。ユーザーのことは『ユーザー』と呼んでください。",
             'example_qa': [
             "user: キャラクターの設定について悩んでいます。",
             "assistant: キャラクター設定は物語の核となる重要な要素ですね。ユーザーが現在考えているキャラクターについて、簡単にご説明いただけますでしょうか？",
@@ -151,6 +156,7 @@ class Settings:
             "user: プロットが面白いか自信がないので、考察のお手伝いをお願いします。",
             "assistant: プロットについてコメントをする前に、まずこの物語の『売り』について簡単に説明してください",
             ],
+            'gen_author_description': 'あなたは新進気鋭の和風伝奇ミステリー小説家で、細やかな筆致と巧みな構成で若い世代にとても人気があります。',
             'DEFAULT_CHAT_MODEL': 'Ninja-v1-RP-expressive-v2_Q4_K_M.gguf',
             'DEFAULT_GEN_MODEL': 'Mistral-Nemo-Instruct-2407-Q8_0.gguf',
             'chat_n_gpu_layers': 0,
@@ -261,16 +267,19 @@ class CharacterMaker:
         self.history.append({"user": input_str, "assistant": res_text})
         return res_text
 
-    def generate_text(self, text, author_type, genre, writing_style, target_audience, gen_characters, gen_token_multiplier, instruction):
+    def generate_text(self, text, gen_characters, gen_token_multiplier, instruction):
         self.load_model('GEN')
         if not self.model_loaded.wait(timeout=30) or not self.llama:
             return "モデルのロードに失敗しました。設定を確認してください。"
         
-        author_description = f"あなたは{author_type}で、{genre}と{writing_style}の文体で{target_audience}に人気があります。"
+        author_description = self.settings.get('gen_author_description', '')
         return self.llama.generate_text(text, author_description, gen_characters, gen_token_multiplier, instruction)
 
     def make_prompt(self, input_str: str):
-        prompt_template = """{{instructions}}
+        prompt_template = """{{chat_author_description}}
+
+{{chat_instructions}}
+
 ・キャラクターの回答例
 {% for qa in example_qa %}
 {{qa}}
@@ -287,12 +296,13 @@ assistant:"""
         
         template = Template(prompt_template)
         return template.render(
-            instructions=self.settings.get('instructions', ''),
+            chat_author_description=self.settings.get('chat_author_description', ''),
+            chat_instructions=self.settings.get('chat_instructions', ''),
             example_qa=self.settings.get('example_qa', []),
             histories=self.history,
             input_str=input_str
         )
-
+    
     def _generate_prompt(self, input_str: str):
         return self.make_prompt(input_str)
 
@@ -422,9 +432,39 @@ def build_model_settings(config, section, output):
     
     return model_settings, section_temp_settings
 
-
 # Gradioインターフェース
 def build_gradio_interface():
+    def apply_settings():
+        for section, settings in temp_settings.items():
+            for key, value in settings.items():
+                ConfigManager.update_setting(section, key, str(value), DEFAULT_INI_FILE)
+        
+        # iniファイルを再読み込み
+        new_config = ConfigManager.load_settings(DEFAULT_INI_FILE)
+        
+        # 設定を更新
+        character_maker.settings = Settings._parse_config(new_config)
+        
+        # パラメータを更新
+        if 'ChatParameters' in new_config:
+            params.update_chat_parameters(
+                int(new_config['ChatParameters'].get('n_gpu_layers', '0')),
+                float(new_config['ChatParameters'].get('temperature', '0.5')),
+                float(new_config['ChatParameters'].get('top_p', '0.7')),
+                int(new_config['ChatParameters'].get('top_k', '80')),
+                float(new_config['ChatParameters'].get('repetition_penalty', '1.2'))
+            )
+        if 'GenerateParameters' in new_config:
+            params.update_generate_parameters(
+                int(new_config['GenerateParameters'].get('n_gpu_layers', '0')),
+                float(new_config['GenerateParameters'].get('temperature', '0.35')),
+                float(new_config['GenerateParameters'].get('top_p', '0.9')),
+                int(new_config['GenerateParameters'].get('top_k', '40')),
+                float(new_config['GenerateParameters'].get('repetition_penalty', '1.2'))
+            )
+        
+        return "設定をiniファイルに保存し、アプリケーションに反映しました。"
+    
     with gr.Blocks() as demo:
         gr.HTML("""
         <style>
@@ -479,10 +519,6 @@ def build_gradio_interface():
                         gen_input_text = gr.Textbox(lines=5, label="処理されるテキストを入力してください")  
                         gen_input_char_count = gr.HTML(value="文字数: 0")                                        
                     with gr.Column(scale=1):
-                        gen_author_type = gr.Textbox(label="作家のタイプ", value="新進気鋭のSF小説家")
-                        gen_genre = gr.Textbox(label="ジャンル", value="斬新なアイデア")
-                        gen_writing_style = gr.Textbox(label="文体", value="切れ味のある文体、流麗な文章")
-                        gen_target_audience = gr.Textbox(label="ターゲット読者", value="若い世代")
                         gen_characters = gr.Slider(minimum=10, maximum=10000, value=500, step=10, label="出力文字数", info="出力文字数の目安")
                         gen_token_multiplier = gr.Slider(minimum=0.5, maximum=3, value=1.75, step=0.01, label="文字/トークン数倍率", info="文字/最大トークン数倍率")
                 
@@ -491,7 +527,7 @@ def build_gradio_interface():
             
                 generate_button.click(
                     character_maker.generate_text,
-                    inputs=[gen_input_text, gen_author_type, gen_genre, gen_writing_style, gen_target_audience, gen_characters, gen_token_multiplier, gen_instruction],
+                    inputs=[gen_input_text, gen_characters, gen_token_multiplier, gen_instruction],
                     outputs=[generated_output]
                 )
 
@@ -566,72 +602,72 @@ def build_gradio_interface():
                     return f"{section}セクションの{key}を更新しました。適用ボタンを押すと設定が保存されます。"
                 
                 config = ConfigManager.load_settings(DEFAULT_INI_FILE)
-                for section in config.sections():
-                    with gr.Accordion(f"{section} 設定", open=(section == "Models" or section == "Character")):
-                        if section == "Models":
-                            model_settings, section_temp_settings = build_model_settings(config, section, output)
-                            temp_settings.update(section_temp_settings)
-                        elif section in ["ChatParameters", "GenerateParameters"]:
-                            for key, value in config[section].items():
-                                if key == 'n_gpu_layers':
-                                    input_component = gr.Slider(label=key, value=int(value), minimum=-1, maximum=255, step=1)
-                                elif key in ['temperature', 'top_p', 'repetition_penalty']:
-                                    input_component = gr.Slider(label=key, value=float(value), minimum=0.0, maximum=1.0, step=0.05)
-                                elif key == 'top_k':
-                                    input_component = gr.Slider(label=key, value=int(value), minimum=1, maximum=200, step=1)
-                                else:
-                                    input_component = gr.Textbox(label=key, value=value)
-                                
-                                input_component.change(
-                                    partial(update_temp_setting, section, key),
-                                    inputs=[input_component],
-                                    outputs=[output]
-                                )
-                        else:
-                            for key, value in config[section].items():
-                                if key == 'instructions':
-                                    input_component = gr.TextArea(label=key, value=value, lines=5)
-                                elif key == 'example_qa':
-                                    input_component = gr.TextArea(label=key, value=value, lines=10)
-                                else:
-                                    input_component = gr.Textbox(label=key, value=value)
-                                
-                                input_component.change(
-                                    partial(update_temp_setting, section, key),
-                                    inputs=[input_component],
-                                    outputs=[output]
-                                )
 
-            def apply_settings():
-                for section, settings in temp_settings.items():
-                    for key, value in settings.items():
-                        ConfigManager.update_setting(section, key, str(value), DEFAULT_INI_FILE)
-                
-                # iniファイルを再読み込み
-                new_config = ConfigManager.load_settings(DEFAULT_INI_FILE)
-                
-                # 設定を更新
-                character_maker.settings = Settings._parse_config(new_config)
-                
-                # パラメータを更新
-                if 'ChatParameters' in new_config:
-                    params.update_chat_parameters(
-                        int(new_config['ChatParameters'].get('n_gpu_layers', '0')),
-                        float(new_config['ChatParameters'].get('temperature', '0.5')),
-                        float(new_config['ChatParameters'].get('top_p', '0.7')),
-                        int(new_config['ChatParameters'].get('top_k', '80')),
-                        float(new_config['ChatParameters'].get('repetition_penalty', '1.2'))
+                with gr.Column():
+                    gr.Markdown("### モデル設定")
+                    model_settings, section_temp_settings = build_model_settings(config, "Models", output)
+                    temp_settings.update(section_temp_settings)
+
+                    gr.Markdown("### チャット設定")
+                    for key in ['chat_author_description', 'chat_instructions', 'example_qa']:
+                        if key == 'example_qa':
+                            input_component = gr.TextArea(label=key, value=config['Character'].get(key, ''), lines=10)
+                        else:
+                            input_component = gr.TextArea(label=key, value=config['Character'].get(key, ''), lines=5)
+                        input_component.change(
+                            partial(update_temp_setting, 'Character', key),
+                            inputs=[input_component],
+                            outputs=[output]
+                        )
+
+                    gr.Markdown("### 文章生成設定")
+                    key = 'gen_author_description'
+                    input_component = gr.TextArea(label=key, value=config['Character'].get(key, ''), lines=5)
+                    input_component.change(
+                        partial(update_temp_setting, 'Character', key),
+                        inputs=[input_component],
+                        outputs=[output]
                     )
-                if 'GenerateParameters' in new_config:
-                    params.update_generate_parameters(
-                        int(new_config['GenerateParameters'].get('n_gpu_layers', '0')),
-                        float(new_config['GenerateParameters'].get('temperature', '0.35')),
-                        float(new_config['GenerateParameters'].get('top_p', '0.9')),
-                        int(new_config['GenerateParameters'].get('top_k', '40')),
-                        float(new_config['GenerateParameters'].get('repetition_penalty', '1.2'))
-                    )
-                
-                return "設定をiniファイルに保存し、アプリケーションに反映しました。"
+
+                    gr.Markdown("### チャットパラメータ設定")
+                    for key, value in config['ChatParameters'].items():
+                        if key == 'n_gpu_layers':
+                            input_component = gr.Slider(label=key, value=int(value), minimum=-1, maximum=255, step=1)
+                        elif key in ['temperature', 'top_p', 'repetition_penalty']:
+                            input_component = gr.Slider(label=key, value=float(value), minimum=0.0, maximum=1.0, step=0.05)
+                        elif key == 'top_k':
+                            input_component = gr.Slider(label=key, value=int(value), minimum=1, maximum=200, step=1)
+                        else:
+                            input_component = gr.Textbox(label=key, value=value)
+                        
+                        input_component.change(
+                            partial(update_temp_setting, 'ChatParameters', key),
+                            inputs=[input_component],
+                            outputs=[output]
+                        )
+
+                    gr.Markdown("### 文章生成パラメータ設定")
+                    for key, value in config['GenerateParameters'].items():
+                        if key == 'n_gpu_layers':
+                            input_component = gr.Slider(label=key, value=int(value), minimum=-1, maximum=255, step=1)
+                        elif key in ['temperature', 'top_p', 'repetition_penalty']:
+                            input_component = gr.Slider(label=key, value=float(value), minimum=0.0, maximum=1.0, step=0.05)
+                        elif key == 'top_k':
+                            input_component = gr.Slider(label=key, value=int(value), minimum=1, maximum=200, step=1)
+                        else:
+                            input_component = gr.Textbox(label=key, value=value)
+                        
+                        input_component.change(
+                            partial(update_temp_setting, 'GenerateParameters', key),
+                            inputs=[input_component],
+                            outputs=[output]
+                        )
+
+                apply_ini_settings_button = gr.Button("設定を適用")
+                apply_ini_settings_button.click(
+                    apply_settings,
+                    outputs=[output]
+                )
 
             apply_ini_settings_button = gr.Button("設定を適用")
             apply_ini_settings_button.click(
@@ -639,7 +675,7 @@ def build_gradio_interface():
                 outputs=[output]
             )
 
-        return demo
+    return demo
 
 async def start_gradio():
     if not os.path.exists(DEFAULT_INI_FILE):
