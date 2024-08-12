@@ -12,127 +12,79 @@ import threading
 import asyncio
 import csv
 
+# 定数
 DEFAULT_INI_FILE = 'settings.ini'
+MODEL_FILE_EXTENSION = '.gguf'
 
-# ビルドしているかしていないかでパスを変更
+# パスの設定
 if getattr(sys, 'frozen', False):
-    path = os.path.dirname(sys.executable)
-    model_dir = os.path.join(os.path.dirname(path), "AI-NovelAssistant", "models")
+    BASE_PATH = os.path.dirname(sys.executable)
+    MODEL_DIR = os.path.join(os.path.dirname(BASE_PATH), "AI-NovelAssistant", "models")
 else:
-    path = os.path.dirname(os.path.abspath(__file__))
-    model_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+    BASE_PATH = os.path.dirname(os.path.abspath(__file__))
+    MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 
-# ユーティリティ関数
-def load_settings(filename):
-    config = configparser.ConfigParser()
-    config.read(filename, encoding='utf-8')
-    return config
-
-def save_settings(config, filename):
-    with open(filename, 'w', encoding='utf-8') as configfile:
-        config.write(configfile)
-
-def update_setting(section, key, value, filename):
-    config = load_settings(filename)
-    config[section][key] = value
-    save_settings(config, filename)
-    return f"設定を更新しました: [{section}] {key} = {value}"
-
-def get_model_files():
-    return [f for f in os.listdir(model_dir) if f.endswith('.gguf')]
-
-def update_model_dropdown(config, section, key):
-    current_value = config[section][key]
-    model_files = get_model_files()
-    
-    if current_value not in model_files:
-        download_message = f"現在の{key}（{current_value}）が見つかりません。ダウンロードしてください。"
-        model_files.insert(0, current_value)  # 現在の値を先頭に追加
-    else:
-        download_message = ""
-    
-    return model_files, current_value, download_message
-
-def save_model_setting(section, key, value, filename):
-    config = load_settings(filename)
-    config[section][key] = value
-    save_settings(config, filename)
-    return f"設定を更新しました: [{section}] {key} = {value}"
-
-def build_model_settings(config, section, output):
-    model_settings = []
-    temp_settings = {}  # 一時的な設定を保存するための辞書
-
-    for key in ['DEFAULT_CHAT_MODEL', 'DEFAULT_GEN_MODEL']:
-        if key in config[section]:
-            with gr.Row():
-                dropdown = gr.Dropdown(
-                    label=key,
-                    choices=get_model_files(),
-                    value=config[section][key]
-                )
-                refresh_button = gr.Button("更新", size="sm")
-                status_message = gr.Markdown()
-            
-            def update_dropdown(current_value):
-                model_files = get_model_files()
-                if current_value not in model_files:
-                    model_files.insert(0, current_value)
-                    status = f"現在の{key}（{current_value}）が見つかりません。ダウンロードしてください。"
-                else:
-                    status = "モデルリストを更新しました。"
-                return gr.Dropdown(choices=model_files, value=current_value), status
-
-            refresh_button.click(
-                fn=update_dropdown,
-                inputs=[dropdown],
-                outputs=[dropdown, status_message]
-            )
-            
-            def update_temp_settings(value):
-                temp_settings[key] = value
-                return f"{key}の選択を{value}に更新しました。適用ボタンを押すと設定が保存されます。"
-
-            dropdown.change(
-                update_temp_settings,
-                inputs=[dropdown],
-                outputs=[output]
-            )
-            
-            model_settings.extend([dropdown, refresh_button, status_message])
-    
-    return model_settings, temp_settings
-
-def get_ip_address():
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-        try:
-            s.connect(('10.255.255.255', 1))
-            return s.getsockname()[0]
-        except Exception:
-            return '127.0.0.1'
-
-def find_available_port(starting_port):
-    port = starting_port
-    while is_port_in_use(port):
-        print(f"Port {port} is in use, trying next one.")
-        port += 1
-    return port
-
-def is_port_in_use(port):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        return s.connect_ex(('localhost', port)) == 0
-
-# 設定関連
-class Settings:
+class ConfigManager:
     @staticmethod
-    def load_from_ini(filename):
+    def load_settings(filename):
         config = configparser.ConfigParser()
-        if not os.path.exists(filename):
-            print(f"{filename} が見つかりません。デフォルト設定で作成します。")
-            Settings.create_default_ini(filename)
         config.read(filename, encoding='utf-8')
-        return Settings._parse_config(config)
+        return config
 
+    @staticmethod
+    def save_settings(config, filename):
+        with open(filename, 'w', encoding='utf-8') as configfile:
+            config.write(configfile)
+
+    @staticmethod
+    def update_setting(section, key, value, filename):
+        config = ConfigManager.load_settings(filename)
+        config[section][key] = value
+        ConfigManager.save_settings(config, filename)
+        return f"設定を更新しました: [{section}] {key} = {value}"
+
+class ModelManager:
+    @staticmethod
+    def get_model_files():
+        return [f for f in os.listdir(MODEL_DIR) if f.endswith(MODEL_FILE_EXTENSION)]
+
+    @staticmethod
+    def update_model_dropdown(config, section, key):
+        current_value = config[section][key]
+        model_files = ModelManager.get_model_files()
+        
+        if current_value not in model_files:
+            download_message = f"現在の{key}（{current_value}）が見つかりません。ダウンロードしてください。"
+            model_files.insert(0, current_value)
+        else:
+            download_message = ""
+        
+        return model_files, current_value, download_message
+
+class NetworkUtils:
+    @staticmethod
+    def get_ip_address():
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            try:
+                s.connect(('10.255.255.255', 1))
+                return s.getsockname()[0]
+            except Exception:
+                return '127.0.0.1'
+
+    @staticmethod
+    def find_available_port(starting_port):
+        port = starting_port
+        while NetworkUtils.is_port_in_use(port):
+            print(f"Port {port} is in use, trying next one.")
+            port += 1
+        return port
+
+    @staticmethod
+    def is_port_in_use(port):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            return s.connect_ex(('localhost', port)) == 0
+
+class Settings:
     @staticmethod
     def _parse_config(config):
         settings = {}
@@ -142,6 +94,18 @@ class Settings:
         if 'Models' in config:
             settings['DEFAULT_CHAT_MODEL'] = config['Models'].get('DEFAULT_CHAT_MODEL', '')
             settings['DEFAULT_GEN_MODEL'] = config['Models'].get('DEFAULT_GEN_MODEL', '')
+        if 'ChatParameters' in config:
+            settings['chat_n_gpu_layers'] = int(config['ChatParameters'].get('n_gpu_layers', '0'))
+            settings['chat_temperature'] = float(config['ChatParameters'].get('temperature', '0.5'))
+            settings['chat_top_p'] = float(config['ChatParameters'].get('top_p', '0.7'))
+            settings['chat_top_k'] = int(config['ChatParameters'].get('top_k', '80'))
+            settings['chat_rep_pen'] = float(config['ChatParameters'].get('repetition_penalty', '1.2'))
+        if 'GenerateParameters' in config:
+            settings['gen_n_gpu_layers'] = int(config['GenerateParameters'].get('n_gpu_layers', '0'))
+            settings['gen_temperature'] = float(config['GenerateParameters'].get('temperature', '0.35'))
+            settings['gen_top_p'] = float(config['GenerateParameters'].get('top_p', '0.9'))
+            settings['gen_top_k'] = int(config['GenerateParameters'].get('top_k', '40'))
+            settings['gen_rep_pen'] = float(config['GenerateParameters'].get('repetition_penalty', '1.2'))
         return settings
 
     @staticmethod
@@ -155,8 +119,21 @@ class Settings:
             'DEFAULT_CHAT_MODEL': settings.get('DEFAULT_CHAT_MODEL', ''),
             'DEFAULT_GEN_MODEL': settings.get('DEFAULT_GEN_MODEL', '')
         }
-        with open(filename, 'w', encoding='utf-8') as configfile:
-            config.write(configfile)
+        config['ChatParameters'] = {
+            'n_gpu_layers': str(settings.get('chat_n_gpu_layers', 0)),
+            'temperature': str(settings.get('chat_temperature', 0.5)),
+            'top_p': str(settings.get('chat_top_p', 0.7)),
+            'top_k': str(settings.get('chat_top_k', 80)),
+            'repetition_penalty': str(settings.get('chat_rep_pen', 1.2))
+        }
+        config['GenerateParameters'] = {
+            'n_gpu_layers': str(settings.get('gen_n_gpu_layers', 0)),
+            'temperature': str(settings.get('gen_temperature', 0.35)),
+            'top_p': str(settings.get('gen_top_p', 0.9)),
+            'top_k': str(settings.get('gen_top_k', 40)),
+            'repetition_penalty': str(settings.get('gen_rep_pen', 1.2))
+        }
+        ConfigManager.save_settings(config, filename)
 
     @staticmethod
     def create_default_ini(filename):
@@ -175,38 +152,55 @@ class Settings:
             "assistant: プロットについてコメントをする前に、まずこの物語の『売り』について簡単に説明してください",
             ],
             'DEFAULT_CHAT_MODEL': 'Ninja-v1-RP-expressive-v2_Q4_K_M.gguf',
-            'DEFAULT_GEN_MODEL': 'Mistral-Nemo-Instruct-2407-Q8_0.gguf'
+            'DEFAULT_GEN_MODEL': 'Mistral-Nemo-Instruct-2407-Q8_0.gguf',
+            'chat_n_gpu_layers': 0,
+            'chat_temperature': 0.5,
+            'chat_top_p': 0.7,
+            'chat_top_k': 80,
+            'chat_rep_pen': 1.2,
+            'gen_n_gpu_layers': 0,
+            'gen_temperature': 0.35,
+            'gen_top_p': 0.9,
+            'gen_top_k': 40,
+            'gen_rep_pen': 1.2
         }
         Settings.save_to_ini(default_settings, filename)
 
-# パラメータ管理
+    @staticmethod
+    def load_from_ini(filename):
+        config = ConfigManager.load_settings(filename)
+        return Settings._parse_config(config)
+
 class GenTextParams:
     def __init__(self):
+        self.gen_n_gpu_layers = 0
         self.gen_temperature = 0.35
         self.gen_top_p = 1.0
         self.gen_top_k = 40
         self.gen_rep_pen = 1.0
+        self.chat_n_gpu_layers = 0
         self.chat_temperature = 0.5
         self.chat_top_p = 0.7
         self.chat_top_k = 80
         self.chat_rep_pen = 1.2
 
-    def update_generate_parameters(self, temperature, top_p, top_k, rep_pen):
+    def update_generate_parameters(self, n_gpu_layers, temperature, top_p, top_k, rep_pen):
+        self.gen_n_gpu_layers = n_gpu_layers
         self.gen_temperature = temperature
         self.gen_top_p = top_p
         self.gen_top_k = top_k
         self.gen_rep_pen = rep_pen
 
-    def update_chat_parameters(self, temperature, top_p, top_k, rep_pen):
+    def update_chat_parameters(self, n_gpu_layers, temperature, top_p, top_k, rep_pen):
+        self.chat_n_gpu_layers = n_gpu_layers
         self.chat_temperature = temperature
         self.chat_top_p = top_p
         self.chat_top_k = top_k
         self.chat_rep_pen = rep_pen
 
-# LLamaモデルのラッパー
 class LlamaAdapter:
-    def __init__(self, model_path, params):
-        self.llm = Llama(model_path=model_path, n_ctx=10000)
+    def __init__(self, model_path, params, n_gpu_layers):
+        self.llm = Llama(model_path=model_path, n_ctx=10000, n_gpu_layers=n_gpu_layers)
         self.params = params
 
     def generate_text(self, text, author_description, gen_characters, gen_token_multiplier, instruction):
@@ -226,7 +220,6 @@ class LlamaAdapter:
                         top_p=self.params.chat_top_p, top_k=self.params.chat_top_k,
                         repeat_penalty=self.params.chat_rep_pen, stop=["user:", "・会話履歴", "<END>"])
 
-# キャラクター生成とチャット管理
 class CharacterMaker:
     def __init__(self):
         self.llama = None
@@ -247,11 +240,12 @@ class CharacterMaker:
                 self.llama = None
 
             try:
-                model_path = os.path.join(model_dir, self.settings[f'DEFAULT_{model_type.upper()}_MODEL'])
-                self.llama = LlamaAdapter(model_path, params)
+                model_path = os.path.join(MODEL_DIR, self.settings[f'DEFAULT_{model_type.upper()}_MODEL'])
+                n_gpu_layers = self.settings[f'{model_type.lower()}_n_gpu_layers']
+                self.llama = LlamaAdapter(model_path, params, n_gpu_layers)
                 self.current_model = model_type
                 self.model_loaded.set()
-                print(f"{model_type} モデル {model_path} のロードが完了しました。")
+                print(f"{model_type} モデル {model_path} のロードが完了しました。(n_gpu_layers: {n_gpu_layers})")
             except Exception as e:
                 print(f"{model_type} モデルのロード中にエラーが発生しました: {str(e)}")
                 self.model_loaded.set()
@@ -313,7 +307,7 @@ assistant:"""
 # グローバル変数
 params = GenTextParams()
 character_maker = CharacterMaker()
-model_files = get_model_files()
+model_files = ModelManager.get_model_files()
 
 # チャット関連関数
 def chat_with_character(message, history):
@@ -384,7 +378,6 @@ def resume_chat_from_log(chat_history):
     
     return chatbot_ui
 
-
 # Gradioインターフェース
 def build_gradio_interface():
     with gr.Blocks() as demo:
@@ -419,23 +412,6 @@ def build_gradio_interface():
                 
                 save_log_output = gr.Textbox(label="保存状態")
                 
-                with gr.Accordion("詳細設定", open=False):
-                    chat_temperature = gr.Slider(label="Temperature", value=0.5, minimum=0.0, maximum=1.0, step=0.05, interactive=True)
-                    chat_top_p = gr.Slider(label="Top-p (nucleus sampling)", value=0.7, minimum=0.0, maximum=1, step=0.05, interactive=True)
-                    chat_top_k = gr.Slider(label="Top-k", value=80, minimum=1, maximum=200, step=1, interactive=True)
-                    chat_rep_pen = gr.Slider(label="Repetition penalty", value=1.2, minimum=1.0, maximum=2.0, step=0.05, interactive=True)
-                    apply_chat_settings_button = gr.Button("設定を適用")
-            
-                def apply_chat_settings(temp, top_p, top_k, rep_pen):
-                                params.update_chat_parameters(temp, top_p, top_k, rep_pen)
-                                return f"チャット設定を適用しました: Temperature={temp}, Top-p={top_p}, Top-k={top_k}, Repetition Penalty={rep_pen}"
-
-                apply_chat_settings_button.click(
-                    apply_chat_settings,
-                    inputs=[chat_temperature, chat_top_p, chat_top_k, chat_rep_pen],
-                    outputs=[save_log_output]
-                )
-                
                 save_log_button.click(
                     save_chat_log,
                     inputs=[chatbot],
@@ -467,24 +443,7 @@ def build_gradio_interface():
                 
                 generate_button = gr.Button("文章生成開始")
                 generated_output = gr.Textbox(label="生成された文章")
-                
-                with gr.Accordion("詳細設定", open=False):
-                    gen_temperature = gr.Slider(label="Temperature", value=0.35, minimum=0.0, maximum=1.0, step=0.05, interactive=True)
-                    gen_top_p = gr.Slider(label="Top-p (nucleus sampling)", value=0.9, minimum=0.0, maximum=1, step=0.05, interactive=True)
-                    gen_top_k = gr.Slider(label="Top-k", value=40, minimum=1, maximum=200, step=1, interactive=True)
-                    gen_rep_pen = gr.Slider(label="Repetition penalty", value=1.2, minimum=1.0, maximum=2.0, step=0.05)
-                    apply_gen_settings_button = gr.Button("設定を適用")
-
-                def apply_gen_settings(temp, top_p, top_k, rep_pen):
-                    params.update_generate_parameters(temp, top_p, top_k, rep_pen)
-                    return f"生成設定を適用しました: Temperature={temp}, Top-p={top_p}, Top-k={top_k}, Repetition Penalty={rep_pen}"
-
-                apply_gen_settings_button.click(
-                    apply_gen_settings,
-                    inputs=[gen_temperature, gen_top_p, gen_top_k, gen_rep_pen],
-                    outputs=[save_log_output]
-                )
-
+            
                 generate_button.click(
                     character_maker.generate_text,
                     inputs=[gen_input_text, gen_author_type, gen_genre, gen_writing_style, gen_target_audience, gen_characters, gen_token_multiplier, gen_instruction],
@@ -550,55 +509,82 @@ def build_gradio_interface():
                     outputs=[chatbot, tabs]
                 )
 
-            config = load_settings(DEFAULT_INI_FILE)     
-            with gr.Tab("設定"):
-                output = gr.Textbox(label="更新状態")
-                
-                temp_settings = {}  # 一時的な設定を保存するための辞書
-                
-                for section in config.sections():
-                    with gr.Accordion(f"{section} 設定", open=(section == "Models" or section == "Character")):
-                        if section == "Models":
-                            model_settings, section_temp_settings = build_model_settings(config, section, output)
-                            temp_settings.update(section_temp_settings)
-                        else:
-                            for key, value in config[section].items():
-                                if key == 'instructions':
-                                    input_component = gr.TextArea(label=key, value=value, lines=5)
-                                elif key == 'example_qa':
-                                    input_component = gr.TextArea(label=key, value=value, lines=10)
-                                else:
-                                    input_component = gr.Textbox(label=key, value=value)
-                                
-                                def update_temp_setting(section, key, value):
-                                    if section not in temp_settings:
-                                        temp_settings[section] = {}
-                                    temp_settings[section][key] = value
-                                    return f"{section}セクションの{key}を更新しました。適用ボタンを押すと設定が保存されます。"
-                                
-                                input_component.change(
-                                    partial(update_temp_setting, section, key),
-                                    inputs=[input_component],
-                                    outputs=[output]
-                                )
+        with gr.Tab("設定"):
+            output = gr.Textbox(label="更新状態")
+            
+            temp_settings = {}  # 一時的な設定を保存するための辞書
+            
+            config = ConfigManager.load_settings(DEFAULT_INI_FILE)
+            for section in config.sections():
+                with gr.Accordion(f"{section} 設定", open=(section == "Models" or section == "Character")):
+                    if section == "Models":
+                        model_settings, section_temp_settings = build_model_settings(config, section, output)
+                        temp_settings.update(section_temp_settings)
+                    elif section in ["ChatParameters", "GenerateParameters"]:
+                        for key, value in config[section].items():
+                            if key == 'n_gpu_layers':
+                                input_component = gr.Slider(label=key, value=int(value), minimum=-1, maximum=255, step=1)
+                            elif key in ['temperature', 'top_p', 'repetition_penalty']:
+                                input_component = gr.Slider(label=key, value=float(value), minimum=0.0, maximum=1.0, step=0.05)
+                            elif key == 'top_k':
+                                input_component = gr.Slider(label=key, value=int(value), minimum=1, maximum=200, step=1)
+                            else:
+                                input_component = gr.Textbox(label=key, value=value)
+                            
+                            def update_temp_setting(section, key, value):
+                                if section not in temp_settings:
+                                    temp_settings[section] = {}
+                                temp_settings[section][key] = value
+                                return f"{section}セクションの{key}を更新しました。適用ボタンを押すと設定が保存されます。"
+                            
+                            input_component.change(
+                                partial(update_temp_setting, section, key),
+                                inputs=[input_component],
+                                outputs=[output]
+                            )
+                    else:
+                        for key, value in config[section].items():
+                            if key == 'instructions':
+                                input_component = gr.TextArea(label=key, value=value, lines=5)
+                            elif key == 'example_qa':
+                                input_component = gr.TextArea(label=key, value=value, lines=10)
+                            else:
+                                input_component = gr.Textbox(label=key, value=value)
+                            
+                            input_component.change(
+                                partial(update_temp_setting, section, key),
+                                inputs=[input_component],
+                                outputs=[output]
+                            )
 
             def apply_settings():
                 for section, settings in temp_settings.items():
                     for key, value in settings.items():
-                        update_setting(section, key, value, DEFAULT_INI_FILE)
+                        ConfigManager.update_setting(section, key, str(value), DEFAULT_INI_FILE)
                 
                 # iniファイルを再読み込み
-                new_config = load_settings(DEFAULT_INI_FILE)
+                new_config = ConfigManager.load_settings(DEFAULT_INI_FILE)
                 
-                # デフォルトモデル設定の更新
-                if 'Models' in new_config:
-                    character_maker.settings['DEFAULT_CHAT_MODEL'] = new_config['Models'].get('DEFAULT_CHAT_MODEL', '')
-                    character_maker.settings['DEFAULT_GEN_MODEL'] = new_config['Models'].get('DEFAULT_GEN_MODEL', '')
+                # 設定を更新
+                character_maker.settings = Settings._parse_config(new_config)
                 
-                # Character設定の更新
-                if 'Character' in new_config:
-                    character_maker.settings['instructions'] = new_config['Character'].get('instructions', '')
-                    character_maker.settings['example_qa'] = new_config['Character'].get('example_qa', '').split('\n')
+                # パラメータを更新
+                if 'ChatParameters' in new_config:
+                    params.update_chat_parameters(
+                        int(new_config['ChatParameters'].get('n_gpu_layers', '0')),
+                        float(new_config['ChatParameters'].get('temperature', '0.5')),
+                        float(new_config['ChatParameters'].get('top_p', '0.7')),
+                        int(new_config['ChatParameters'].get('top_k', '80')),
+                        float(new_config['ChatParameters'].get('repetition_penalty', '1.2'))
+                    )
+                if 'GenerateParameters' in new_config:
+                    params.update_generate_parameters(
+                        int(new_config['GenerateParameters'].get('n_gpu_layers', '0')),
+                        float(new_config['GenerateParameters'].get('temperature', '0.35')),
+                        float(new_config['GenerateParameters'].get('top_p', '0.9')),
+                        int(new_config['GenerateParameters'].get('top_k', '40')),
+                        float(new_config['GenerateParameters'].get('repetition_penalty', '1.2'))
+                    )
                 
                 return "設定をiniファイルに保存し、アプリケーションに反映しました。"
 
@@ -608,28 +594,40 @@ def build_gradio_interface():
                 outputs=[output]
             )
 
-    return demo
+        return demo
 
-
-
-
-
-
-
-
-
-async def load_model_and_start_gradio():
+async def start_gradio():
     if not os.path.exists(DEFAULT_INI_FILE):
         print(f"{DEFAULT_INI_FILE} が見つかりません。デフォルト設定で作成します。")
         Settings.create_default_ini(DEFAULT_INI_FILE)
 
+    config = ConfigManager.load_settings(DEFAULT_INI_FILE)
+    settings = Settings._parse_config(config)
+
+    character_maker.settings = settings
     character_maker.load_character(DEFAULT_INI_FILE)
+    
+    # パラメータの初期化
+    params.update_chat_parameters(
+        settings['chat_n_gpu_layers'],
+        settings['chat_temperature'],
+        settings['chat_top_p'],
+        settings['chat_top_k'],
+        settings['chat_rep_pen']
+    )
+    params.update_generate_parameters(
+        settings['gen_n_gpu_layers'],
+        settings['gen_temperature'],
+        settings['gen_top_p'],
+        settings['gen_top_k'],
+        settings['gen_rep_pen']
+    )
     
     demo = build_gradio_interface()
 
-    ip_address = get_ip_address()
+    ip_address = NetworkUtils.get_ip_address()
     starting_port = 7860
-    port = find_available_port(starting_port)
+    port = NetworkUtils.find_available_port(starting_port)
     print(f"サーバーのアドレス: http://{ip_address}:{port}")
     
     demo.queue()
@@ -641,4 +639,4 @@ async def load_model_and_start_gradio():
     )
 
 if __name__ == "__main__":
-    asyncio.run(load_model_and_start_gradio())
+    asyncio.run(start_gradio())
