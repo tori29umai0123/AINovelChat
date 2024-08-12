@@ -378,6 +378,51 @@ def resume_chat_from_log(chat_history):
     
     return chatbot_ui
 
+def build_model_settings(config, section, output):
+    model_settings = []
+    section_temp_settings = {}
+
+    for key in ['DEFAULT_CHAT_MODEL', 'DEFAULT_GEN_MODEL']:
+        if key in config[section]:
+            with gr.Row():
+                dropdown = gr.Dropdown(
+                    label=key,
+                    choices=ModelManager.get_model_files(),
+                    value=config[section][key]
+                )
+                refresh_button = gr.Button("更新", size="sm")
+                status_message = gr.Markdown()
+            
+            def update_dropdown(current_value):
+                model_files = ModelManager.get_model_files()
+                if current_value not in model_files:
+                    model_files.insert(0, current_value)
+                    status = f"現在の{key}（{current_value}）が見つかりません。ダウンロードしてください。"
+                else:
+                    status = "モデルリストを更新しました。"
+                return gr.update(choices=model_files, value=current_value), status
+
+            refresh_button.click(
+                fn=update_dropdown,
+                inputs=[dropdown],
+                outputs=[dropdown, status_message]
+            )
+            
+            def update_temp_setting(value):
+                section_temp_settings[key] = value
+                return f"{key}の選択を{value}に更新しました。適用ボタンを押すと設定が保存されます。"
+
+            dropdown.change(
+                update_temp_setting,
+                inputs=[dropdown],
+                outputs=[output]
+            )
+            
+            model_settings.extend([dropdown, refresh_button, status_message])
+    
+    return model_settings, section_temp_settings
+
+
 # Gradioインターフェース
 def build_gradio_interface():
     with gr.Blocks() as demo:
@@ -509,53 +554,53 @@ def build_gradio_interface():
                     outputs=[chatbot, tabs]
                 )
 
-        with gr.Tab("設定"):
-            output = gr.Textbox(label="更新状態")
-            
-            temp_settings = {}  # 一時的な設定を保存するための辞書
-            
-            config = ConfigManager.load_settings(DEFAULT_INI_FILE)
-            for section in config.sections():
-                with gr.Accordion(f"{section} 設定", open=(section == "Models" or section == "Character")):
-                    if section == "Models":
-                        model_settings, section_temp_settings = build_model_settings(config, section, output)
-                        temp_settings.update(section_temp_settings)
-                    elif section in ["ChatParameters", "GenerateParameters"]:
-                        for key, value in config[section].items():
-                            if key == 'n_gpu_layers':
-                                input_component = gr.Slider(label=key, value=int(value), minimum=-1, maximum=255, step=1)
-                            elif key in ['temperature', 'top_p', 'repetition_penalty']:
-                                input_component = gr.Slider(label=key, value=float(value), minimum=0.0, maximum=1.0, step=0.05)
-                            elif key == 'top_k':
-                                input_component = gr.Slider(label=key, value=int(value), minimum=1, maximum=200, step=1)
-                            else:
-                                input_component = gr.Textbox(label=key, value=value)
-                            
-                            def update_temp_setting(section, key, value):
-                                if section not in temp_settings:
-                                    temp_settings[section] = {}
-                                temp_settings[section][key] = value
-                                return f"{section}セクションの{key}を更新しました。適用ボタンを押すと設定が保存されます。"
-                            
-                            input_component.change(
-                                partial(update_temp_setting, section, key),
-                                inputs=[input_component],
-                                outputs=[output]
-                            )
-                    else:
-                        for key, value in config[section].items():
-                            if key == 'instructions':
-                                input_component = gr.TextArea(label=key, value=value, lines=5)
-                            elif key == 'example_qa':
-                                input_component = gr.TextArea(label=key, value=value, lines=10)
-                            else:
-                                input_component = gr.Textbox(label=key, value=value)
-                            
-                            input_component.change(
-                                partial(update_temp_setting, section, key),
-                                inputs=[input_component],
-                                outputs=[output]
-                            )
+            with gr.Tab("設定"):
+                output = gr.Textbox(label="更新状態")
+                
+                temp_settings = {}  # 一時的な設定を保存するための辞書
+                
+                def update_temp_setting(section, key, value):
+                    if section not in temp_settings:
+                        temp_settings[section] = {}
+                    temp_settings[section][key] = value
+                    return f"{section}セクションの{key}を更新しました。適用ボタンを押すと設定が保存されます。"
+                
+                config = ConfigManager.load_settings(DEFAULT_INI_FILE)
+                for section in config.sections():
+                    with gr.Accordion(f"{section} 設定", open=(section == "Models" or section == "Character")):
+                        if section == "Models":
+                            model_settings, section_temp_settings = build_model_settings(config, section, output)
+                            temp_settings.update(section_temp_settings)
+                        elif section in ["ChatParameters", "GenerateParameters"]:
+                            for key, value in config[section].items():
+                                if key == 'n_gpu_layers':
+                                    input_component = gr.Slider(label=key, value=int(value), minimum=-1, maximum=255, step=1)
+                                elif key in ['temperature', 'top_p', 'repetition_penalty']:
+                                    input_component = gr.Slider(label=key, value=float(value), minimum=0.0, maximum=1.0, step=0.05)
+                                elif key == 'top_k':
+                                    input_component = gr.Slider(label=key, value=int(value), minimum=1, maximum=200, step=1)
+                                else:
+                                    input_component = gr.Textbox(label=key, value=value)
+                                
+                                input_component.change(
+                                    partial(update_temp_setting, section, key),
+                                    inputs=[input_component],
+                                    outputs=[output]
+                                )
+                        else:
+                            for key, value in config[section].items():
+                                if key == 'instructions':
+                                    input_component = gr.TextArea(label=key, value=value, lines=5)
+                                elif key == 'example_qa':
+                                    input_component = gr.TextArea(label=key, value=value, lines=10)
+                                else:
+                                    input_component = gr.Textbox(label=key, value=value)
+                                
+                                input_component.change(
+                                    partial(update_temp_setting, section, key),
+                                    inputs=[input_component],
+                                    outputs=[output]
+                                )
 
             def apply_settings():
                 for section, settings in temp_settings.items():
