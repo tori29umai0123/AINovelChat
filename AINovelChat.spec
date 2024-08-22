@@ -48,5 +48,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='AICharacterChat',
+    name='AINovelChat',
 )
