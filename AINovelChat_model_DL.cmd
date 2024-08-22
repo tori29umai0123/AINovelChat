@@ -177,12 +177,12 @@ exit /b 0
 echo Starting main execution
 
 REM Define hashes
-set "models_Ninja-v1-RP-expressive-v2_Q4_K_M_hash=6c8557279648c7e1f1665771b698c6e2bcfb8eee2a5ff726a89862a1090676ed"
-set "models_Mistral-Nemo-Instruct-2407-Q8_hash=824229be17606dd8177fc91c1d330b065bc4f3de2873eab614376b988dcbf48a"
+set "models_EZO-Common-9B-gemma-2-it.Q8_0_hash=42c46c773e56cedc82232da12d8d1a7da5fc459a8bc21b34ab624544a5c3fa91"
+set "models_Mistral-Nemo-Instruct-2407-Q8_0_hash=08aba63fd29ea8fa2f846566e353f78acce2eec1bd6043df7a4242046a0d7ae4"
 
 echo Downloading gguf model:
-call :download_files_default "models" "Aratako/Ninja-v1-RP-expressive-v2-GGUF" "Ninja-v1-RP-expressive-v2_Q4_K_M.gguf"
-call :download_files_default "models" "mmnga/Mistral-Nemo-Instruct-2407-gguf" "Mistral-Nemo-Instruct-2407-Q8_0.gguf"
+call :download_files_default "models" "MCZK/EZO-Common-9B-gemma-2-it-GGUF" "EZO-Common-9B-gemma-2-it.Q8_0.gguf"
+call :download_files_default "models" "bartowski/Mistral-Nemo-Instruct-2407-GGUF" "Mistral-Nemo-Instruct-2407-Q8_0.gguf"
 
 echo Script execution completed
 echo Press Enter to close the script...
