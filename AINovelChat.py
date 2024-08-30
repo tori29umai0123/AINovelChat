@@ -1,3 +1,4 @@
+import cohere
 import os
 import sys
 import time
@@ -11,7 +12,7 @@ from functools import partial
 import threading
 import asyncio
 import csv
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
 # 定数
 DEFAULT_INI_FILE = 'settings.ini'
@@ -24,6 +25,55 @@ if getattr(sys, 'frozen', False):
 else:
     BASE_PATH = os.path.dirname(os.path.abspath(__file__))
     MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+
+class CohereAdapter:
+    def __init__(self, api_key: str, settings: Dict[str, Any]):
+        self.client = cohere.Client(api_key=api_key)
+        self.chat_history: List[Dict[str, str]] = []
+        self.conversation_id: Optional[str] = None
+        self.settings = settings
+
+    def generate_response(self, message: str, chat_history: Optional[List[Dict[str, str]]] = None, instruction: str = "") -> str:
+        """応答を生成します。chat_historyが指定されない場合は単一のメッセージとして扱い、instructionを含めます。"""
+        system_message = f"{self.settings.get('chat_author_description', '')}\n\n{self.settings.get('chat_instructions', '')}"
+        
+        try:
+            if chat_history is not None:
+                # チャットタブ用
+                if not message.strip():
+                    return "メッセージが空です。有効なメッセージを入力してください。"
+                
+                self.chat_history = chat_history
+                response = self.client.chat(
+                    model="command-r-plus-08-2024",
+                    chat_history=self.chat_history,
+                    message=message,
+                    preamble=system_message
+                )
+                # 会話履歴を更新
+                self.chat_history = response.chat_history
+            else:
+                # 生成タブ用
+                full_message = f"{instruction}\n\n{message}".strip()
+                if not full_message:
+                    return "指示とテキストが両方とも空です。少なくともどちらか一方を入力してください。"
+                
+                response = self.client.chat(
+                    model="command-r-plus-08-2024",
+                    chat_history=[],
+                    message=full_message,
+                    preamble=system_message
+                )
+                # 会話履歴は更新しない（単一のメッセージとして扱うため）
+
+            return response.text
+        except Exception as e:
+            print(f"Cohere API エラー: {str(e)}")
+            return f"エラーが発生しました: {str(e)}"
+
+    def reset_conversation(self):
+        self.chat_history = []
+        self.conversation_id = None
 
 class Config:
     def __init__(self, filename: str):
@@ -55,6 +105,15 @@ class Config:
         self.set(section, key, value)
         self.save()
         return f"設定を更新しました: [{section}] {key} = {value}"
+
+    def get_cohere_api_key(self) -> str:
+        """Cohere APIキーを取得します"""
+        return self.get('Cohere', 'api_key', fallback='')
+
+    def set_cohere_api_key(self, api_key: str) -> None:
+        """Cohere APIキーを設定し保存します"""
+        self.set('Cohere', 'api_key', api_key)
+        self.save()
 
 class FileUtils:
     @staticmethod
@@ -114,7 +173,10 @@ class LlamaAdapter:
     def __init__(self, model_path: str, params: Dict[str, Any]):
         self.model_path = model_path
         self.params = params
-        self.llm = Llama(model_path=model_path, **params)
+        params_copy = params.copy()
+        if 'model_path' in params_copy:
+            del params_copy['model_path']
+        self.llm = Llama(model_path=model_path, **params_copy)
 
     def _process_response(self, response: Any) -> str:
         """LLMの応答を処理します"""
@@ -127,16 +189,21 @@ class LlamaAdapter:
 
     def generate_text(self, prompt: str, max_tokens: int) -> str:
         """テキストを生成します"""
-        response = self.llm(
-            prompt,
-            max_tokens=max_tokens,
-            temperature=self.params['temperature'],
-            top_p=self.params['top_p'],
-            top_k=self.params['top_k'],
-            repeat_penalty=self.params['repeat_penalty'],
-            stop=["user:", "・会話履歴", "<END>"]
-        )
-        return self._process_response(response)
+        try:
+            response = self.llm(
+                prompt,
+                max_tokens=max_tokens,
+                temperature=self.params['temperature'],
+                top_p=self.params['top_p'],
+                top_k=self.params['top_k'],
+                repeat_penalty=self.params['repeat_penalty'],
+                stop=["user:", "・会話履歴", "<END>"]
+            )
+            print(f"LLM応答: {response}")
+            return self._process_response(response)
+        except Exception as e:
+            print(f"LLM生成中にエラーが発生: {str(e)}")
+            raise
 
     def create_chat_completion(self, messages: List[Dict[str, str]], max_tokens: int) -> Dict[str, Any]:
         """チャット形式の応答を生成します"""
@@ -150,7 +217,7 @@ class LlamaAdapter:
         )
 
 class CharacterMaker:
-    def __init__(self, llm_adapter: LlamaAdapter, settings: Dict[str, Any]):
+    def __init__(self, llm_adapter: Any, settings: Dict[str, Any]):
         self.llm_adapter = llm_adapter
         self.settings = settings
         self.history: List[Dict[str, str]] = []
@@ -161,32 +228,48 @@ class CharacterMaker:
         self.model_lock = threading.Lock()
         self.chat_model_settings = None
         self.gen_model_settings = None
+        self.use_cohere = False
+        self.cohere_adapter = None
+
+    def set_cohere_adapter(self, api_key: str) -> None:
+        """Cohere APIアダプターを設定します"""
+        self.cohere_adapter = CohereAdapter(api_key, self.settings)
+        self.use_cohere = True
+        self.model_loaded.set()  # Cohereの場合は即座にモデルがロードされたとみなす
 
     def load_model(self, model_type: str) -> None:
         """モデルをロードします"""
-        with self.model_lock:
-            new_settings = self.get_current_settings(model_type)
-            
-            if model_type == 'CHAT':
-                if self.chat_model_settings == new_settings:
-                    print("CHATモデルの設定に変更がないため、リロードをスキップします。")
-                    return
-                self.chat_model_settings = new_settings
-            else:  # GEN
-                if self.gen_model_settings == new_settings:
-                    print("GENモデルの設定に変更がないため、リロードをスキップします。")
-                    return
-                self.gen_model_settings = new_settings
+        if self.use_cohere:
+            print("Cohereモデルを使用中です。ローカルモデルのロードはスキップします。")
+            return
 
-            if self.are_models_identical():
-                if self.llm_adapter and self.current_model == 'SHARED':
-                    print("CHATモデルとGENモデルの設定が同じで、既にロードされています。リロードをスキップします。")
-                    return
-                print("CHATモデルとGENモデルの設定が同じです。共有モデルとしてロードします。")
-                self.reload_model('SHARED', new_settings)
-            else:
-                print(f"{model_type}モデルをロードします。")
+        with self.model_lock:
+            if self.llm_adapter is None:
+                new_settings = self.get_current_settings(model_type)
                 self.reload_model(model_type, new_settings)
+            else:
+                new_settings = self.get_current_settings(model_type)
+                
+                if model_type == 'CHAT':
+                    if self.chat_model_settings == new_settings:
+                        print("CHATモデルの設定に変更がないため、リロードをスキップします。")
+                        return
+                    self.chat_model_settings = new_settings
+                else:  # GEN
+                    if self.gen_model_settings == new_settings:
+                        print("GENモデルの設定に変更がないため、リロードをスキップします。")
+                        return
+                    self.gen_model_settings = new_settings
+
+                if self.are_models_identical():
+                    if self.llm_adapter and self.current_model == 'SHARED':
+                        print("CHATモデルとGENモデルの設定が同じで、既にロードされています。リロードをスキップします。")
+                        return
+                    print("CHATモデルとGENモデルの設定が同じです。共有モデルとしてロードします。")
+                    self.reload_model('SHARED', new_settings)
+                else:
+                    print(f"{model_type}モデルをロードします。")
+                    self.reload_model(model_type, new_settings)
 
     def reload_model(self, model_type: str, settings: Dict[str, Any]) -> None:
         """モデルをリロードします"""
@@ -194,7 +277,9 @@ class CharacterMaker:
 
         try:
             model_path = os.path.join(MODEL_DIR, settings['model_path'])
-            self.llm_adapter = LlamaAdapter(model_path, settings)
+            # 'model_path'キーを削除して、他のパラメータだけを渡す
+            llm_params = {k: v for k, v in settings.items() if k != 'model_path'}
+            self.llm_adapter = LlamaAdapter(model_path, llm_params)
             self.current_model = model_type
             self.model_loaded.set()
             print(f"{model_type}モデルをロードしました。モデルパス: {model_path}、GPUレイヤー数: {settings['n_gpu_layers']}")
@@ -221,59 +306,67 @@ class CharacterMaker:
         return self.chat_model_settings == self.gen_model_settings
 
     def generate_response(self, input_str: str) -> str:
-        """応答を生成します"""
-        self.load_model('CHAT')
-        if not self.model_loaded.wait(timeout=30) or not self.llm_adapter:
-            return "モデルのロードに失敗しました。設定を確認してください。"
-        
-        try:
-            if self.use_chat_format:
-                chat_messages = self._prepare_chat_messages(input_str)
-                response = self.llm_adapter.create_chat_completion(chat_messages, max_tokens=1000)
-                res_text = response["choices"][0]["message"]["content"].strip()
-            else:
-                prompt = self._generate_prompt(input_str)
-                res_text = self.llm_adapter.generate_text(prompt, max_tokens=1000)
+        """チャットタブ用の応答を生成します（マルチターン会話）"""
+        if self.use_cohere:
+            return self.cohere_adapter.generate_response(input_str, self.chat_history)
+        else:
+            self.load_model('CHAT')
+            if not self.model_loaded.wait(timeout=30) or not self.llm_adapter:
+                return "モデルのロードに失敗しました。設定を確認してください。"
             
-            if not res_text:
-                return "申し訳ありません。有効な応答を生成できませんでした。もう一度お試しください。"
-            
-            self._update_history(input_str, res_text)
-            return res_text
-        except Exception as e:
-            print(f"レスポンス生成中にエラーが発生しました: {str(e)}")
-            return f"レスポンス生成中にエラーが発生しました: {str(e)}"
+            try:
+                if self.use_chat_format:
+                    chat_messages = self._prepare_chat_messages(input_str)
+                    response = self.llm_adapter.create_chat_completion(chat_messages, max_tokens=1000)
+                    res_text = response["choices"][0]["message"]["content"].strip()
+                else:
+                    prompt = self._generate_prompt(input_str)
+                    res_text = self.llm_adapter.generate_text(prompt, max_tokens=1000)
+                
+                if not res_text:
+                    return "申し訳ありません。有効な応答を生成できませんでした。もう一度お試しください。"
+                
+                self._update_history(input_str, res_text)
+                return res_text
+            except Exception as e:
+                print(f"レスポンス生成中にエラーが発生しました: {str(e)}")
+                return f"レスポンス生成中にエラーが発生しました: {str(e)}"
 
     def generate_text(self, text: str, gen_characters: int, gen_token_multiplier: float, instruction: str) -> str:
-        """テキストを生成します"""
-        self.load_model('GEN')
-        if not self.model_loaded.wait(timeout=30) or not self.llm_adapter:
-            return "モデルのロードに失敗しました。設定を確認してください。"
-        
-        author_description = self.settings.get('gen_author_description', '')
-        max_tokens = int(gen_characters * gen_token_multiplier)
-        
-        try:
-            if self.use_chat_format:
-                messages = [
-                    {"role": "system", "content": author_description},
-                    {"role": "user", "content": f"以下の指示に従ってテキストを生成してください：\n\n{instruction}\n\n生成するテキスト（目安は{gen_characters}文字）：\n\n{text}"}
-                ]
+        """生成タブ用のテキストを生成します（会話履歴なし）"""
+        if self.use_cohere:
+            return self.cohere_adapter.generate_response(text, chat_history=None, instruction=instruction)
+        else:
+            self.load_model('GEN')
+            if not self.model_loaded.wait(timeout=30) or not self.llm_adapter:
+                return "モデルのロードに失敗しました。設定を確認してください。"
+            
+            author_description = self.settings.get('gen_author_description', '')
+            max_tokens = int(gen_characters * gen_token_multiplier)
+            
+            try:
+                if self.use_chat_format:
+                    messages = [
+                        {"role": "system", "content": author_description},
+                        {"role": "user", "content": f"{instruction}\n\n{text}"}
+                    ]
+                    
+                    response = self.llm_adapter.create_chat_completion(messages, max_tokens)
+                    generated_text = response["choices"][0]["message"]["content"].strip()
+                else:
+                    prompt = f"{author_description}\n\n指示：{instruction}\n\n入力テキスト：{text}\n\n生成されたテキスト："
+                    generated_text = self.llm_adapter.generate_text(prompt, max_tokens)
                 
-                response = self.llm_adapter.create_chat_completion(messages, max_tokens)
-                generated_text = response["choices"][0]["message"]["content"].strip()
-            else:
-                prompt = f"{author_description}\n\n以下の指示に従ってテキストを生成してください：\n\n{instruction}\n\n生成するテキスト（目安は{gen_characters}文字）：\n\n{text}\n\n生成されたテキスト："
-                generated_text = self.llm_adapter.generate_text(prompt, max_tokens)
+                if not generated_text:
+                    print(f"生成されたテキストが空です。入力: {text[:100]}...")
+                    return "申し訳ありません。有効なテキストを生成できませんでした。もう一度お試しください。"
+                
+                print(f"生成されたテキスト（最初の100文字）: {generated_text[:100]}...")
+                return generated_text
+            except Exception as e:
+                print(f"テキスト生成中にエラーが発生しました: {str(e)}")
+                return f"テキスト生成中にエラーが発生しました: {str(e)}"
             
-            if not generated_text:
-                return "申し訳ありません。有効なテキストを生成できませんでした。もう一度お試しください。"
-            
-            return generated_text
-        except Exception as e:
-            print(f"テキスト生成中にエラーが発生しました: {str(e)}")
-            return f"テキスト生成中にエラーが発生しました: {str(e)}"
-
     def set_chat_format(self, use_chat_format: bool) -> None:
         """チャットフォーマットを設定します"""
         self.use_chat_format = use_chat_format
@@ -315,12 +408,12 @@ assistant:"""
         )
 
     def _update_history(self, input_str: str, res_text: str) -> None:
-            """履歴を更新します"""
-            if self.use_chat_format:
-                self.chat_history.append({"role": "user", "content": input_str})
-                self.chat_history.append({"role": "assistant", "content": res_text})
-            else:
-                self.history.append({"user": input_str, "assistant": res_text})
+        """履歴を更新します"""
+        if self.use_chat_format:
+            self.chat_history.append({"role": "user", "content": input_str})
+            self.chat_history.append({"role": "assistant", "content": res_text})
+        else:
+            self.history.append({"user": input_str, "assistant": res_text})
 
     def load_character(self, filename: str) -> None:
         """キャラクター設定をロードします"""
@@ -333,6 +426,8 @@ assistant:"""
         self.history = []
         self.chat_history = []
         self.use_chat_format = False
+        if self.use_cohere:
+            self.cohere_adapter.reset_conversation()
 
 class Settings:
     @staticmethod
@@ -415,8 +510,8 @@ class Settings:
             "assistant: プロットについてコメントをする前に、まずこの物語の『売り』について簡単に説明してください",
             ],
             'gen_author_description': 'あなたは新進気鋭の和風伝奇ミステリー小説家で、細やかな筆致と巧みな構成で若い世代にとても人気があります。',
-            'DEFAULT_CHAT_MODEL': 'EZO-Common-9B-gemma-2-it.Q8_0.gguf',
-            'DEFAULT_GEN_MODEL': 'EZO-Common-9B-gemma-2-it.Q8_0.gguf',
+            'DEFAULT_CHAT_MODEL': 'command-r-plus-08-2024',
+            'DEFAULT_GEN_MODEL': 'command-r-plus-08-2024',
             'chat_n_gpu_layers': 120,
             'chat_temperature': 0.35,
             'chat_top_p': 0.9,
@@ -447,7 +542,9 @@ temp_settings: Dict[str, Dict[str, Any]] = {}
 # チャット関連関数
 def chat_with_character(message: str, history: List[List[str]]) -> str:
     """キャラクターとチャットします"""
-    if character_maker.use_chat_format:
+    if character_maker.use_cohere:
+        character_maker.chat_history = [{"role": "USER" if i % 2 == 0 else "CHATBOT", "message": msg} for i, msg in enumerate(sum(history, []))]
+    elif character_maker.use_chat_format:
         character_maker.chat_history = [{"role": "user" if i % 2 == 0 else "assistant", "content": msg} for i, msg in enumerate(sum(history, []))]
     else:
         character_maker.history = [{"user": h[0], "assistant": h[1]} for h in history]
@@ -455,7 +552,9 @@ def chat_with_character(message: str, history: List[List[str]]) -> str:
 
 def chat_with_character_stream(message: str, history: List[List[str]]) -> str:
     """キャラクターとのチャットをストリーム形式で行います"""
-    if character_maker.use_chat_format:
+    if character_maker.use_cohere:
+        character_maker.chat_history = [{"role": "USER" if i % 2 == 0 else "CHATBOT", "message": msg} for i, msg in enumerate(sum(history, []))]
+    elif character_maker.use_chat_format:
         character_maker.chat_history = [{"role": "user" if i % 2 == 0 else "assistant", "content": msg} for i, msg in enumerate(sum(history, []))]
     else:
         character_maker.history = [{"user": h[0], "assistant": h[1]} for h in history]
@@ -543,14 +642,14 @@ def build_model_settings(config: configparser.ConfigParser, section: str, output
             with gr.Row():
                 dropdown = gr.Dropdown(
                     label=key,
-                    choices=ModelManager.get_model_files(),
+                    choices=ModelManager.get_model_files() + ["command-r-plus-08-2024"],
                     value=config[section][key]
                 )
                 refresh_button = gr.Button("更新", size="sm")
                 status_message = gr.Markdown()
             
             def update_dropdown(current_value):
-                model_files = ModelManager.get_model_files()
+                model_files = ModelManager.get_model_files() + ["command-r-plus-08-2024"]
                 if current_value not in model_files:
                     model_files.insert(0, current_value)
                     status = f"現在の{key}（{current_value}）が見つかりません。ダウンロードしてください。"
@@ -609,11 +708,12 @@ def build_gradio_interface() -> gr.Blocks:
     with gr.Blocks() as iface:
         gr.HTML("""
         <div style="background-color: #f0f0f0; padding: 10px; margin-bottom: 10px; border-radius: 5px;">
-            <strong>注意：</strong>念のため、NSFW創作用途の場合はモデルを設定タブから、「EZO-Common-9B-gemma-2-it.Q8_0.gguf」→「Mistral-Nemo-Instruct-2407-Q8_0.gguf」に変更推奨です。
-            <br>
-            <a href="https://note.com/eurekachan/n/nd05d6307fead" target="_blank" style="color: #007bff; text-decoration: underline;">
-                参考情報はこちら
-            </a>
+            <strong>注意：</strong>使用モデルの規約に従って生成してください。
+            <br>NSFW創作はMistral-Nemo-Instruct-2407-Q8_0.ggufがおすすめです
+            <br>各種規約情報は以下のリンク：
+            <br>・<a href="https://note.com/eurekachan/n/nd05d6307fead" target="_blank" style="color: #007bff;">EZO-Common-9B-gemma-2-it.Q8_0</a>
+            <br>・<a href="https://huggingface.co/datasets/choosealicense/licenses/blob/main/markdown/apache-2.0.md" target="_blank" style="color: #007bff;">Mistral-Nemo-Instruct-2407-Q8_0</a>
+            <br>・<a href="https://docs.cohere.com/docs/c4ai-acceptable-use-policy" target="_blank" style="color: #007bff;">command-r-plus-08-2024</a>
         </div>
         """)
 
@@ -754,7 +854,68 @@ def build_gradio_interface() -> gr.Blocks:
 
                 with gr.Column():
                     gr.Markdown("### モデル設定")
-                    model_settings = build_model_settings(config.config, "Models", output)
+                    model_settings = []
+
+                    for key in ['DEFAULT_CHAT_MODEL', 'DEFAULT_GEN_MODEL']:
+                        if key in config.config['Models']:
+                            with gr.Row():
+                                dropdown = gr.Dropdown(
+                                    label=key,
+                                    choices=ModelManager.get_model_files() + ["command-r-plus-08-2024"],
+                                    value=config.config['Models'][key]
+                                )
+                                refresh_button = gr.Button("更新", size="sm")
+                                status_message = gr.Markdown()
+                            
+                            def update_dropdown(current_value):
+                                model_files = ModelManager.get_model_files() + ["command-r-plus-08-2024"]
+                                if current_value not in model_files:
+                                    model_files.insert(0, current_value)
+                                    status = f"現在の{key}（{current_value}）が見つかりません。ダウンロードしてください。"
+                                else:
+                                    status = "モデルリストを更新しました。"
+                                return gr.update(choices=model_files, value=current_value), status
+
+                            refresh_button.click(
+                                fn=update_dropdown,
+                                inputs=[dropdown],
+                                outputs=[dropdown, status_message]
+                            )
+                            
+                            dropdown.change(
+                                partial(update_temp_setting, 'Models', key),
+                                inputs=[dropdown],
+                                outputs=[output]
+                            )
+                            
+                            model_settings.extend([dropdown, refresh_button, status_message])
+
+                    gr.Markdown("""
+                    ### Cohere API設定
+                    注意: 商用目的でcommand-r-plus-08-2024を使用する場合は、Trial KeyではなくProduction Keyを利用してください。
+                    詳細は[Cohereのドキュメント](https://docs.cohere.com/docs/rate-limits)を参照してください。
+                    """)
+
+                    cohere_api_key = gr.Textbox(
+                        label="Cohere API Key",
+                        type="password",
+                        value=config.get_cohere_api_key()
+                    )
+
+                    def save_cohere_api_key(api_key: str) -> str:
+                        config.set_cohere_api_key(api_key)
+                        return "Cohere API Keyが保存されました。"
+
+                    save_api_key_button = gr.Button("Cohere API Keyを保存")
+                    save_api_key_button.click(
+                        save_cohere_api_key,
+                        inputs=[cohere_api_key],
+                        outputs=[output]
+                    )
+
+                    def save_cohere_api_key(api_key: str) -> str:
+                        config.set_cohere_api_key(api_key)
+                        return "Cohere API Keyが保存されました。"
 
                     gr.Markdown("### チャット設定")
                     for key in ['chat_author_description', 'chat_instructions', 'example_qa']:
@@ -822,6 +983,7 @@ def build_gradio_interface() -> gr.Blocks:
                         apply_settings,
                         outputs=[output]
                     )
+
     return iface
 
 async def start_gradio() -> None:
@@ -836,15 +998,18 @@ async def start_gradio() -> None:
     settings = Settings._parse_config(config.config)
 
     model_manager = ModelManager(MODEL_DIR)
-    llm_adapter = LlamaAdapter(os.path.join(MODEL_DIR, settings['DEFAULT_CHAT_MODEL']), {
-        'n_ctx': settings['chat_n_ctx'],
-        'n_gpu_layers': settings['chat_n_gpu_layers'],
-        'temperature': settings['chat_temperature'],
-        'top_p': settings['chat_top_p'],
-        'top_k': settings['chat_top_k'],
-        'repeat_penalty': settings['chat_rep_pen'],
-    })
-    character_maker = CharacterMaker(llm_adapter, settings)
+    
+    # CharacterMakerを初期化しますが、モデルはロードしません
+    character_maker = CharacterMaker(None, settings)
+    
+    # Cohere APIキーが設定されている場合は、Cohereアダプターを設定します
+    if settings['DEFAULT_CHAT_MODEL'] == "command-r-plus-08-2024":
+        cohere_api_key = config.get_cohere_api_key()
+        if cohere_api_key:
+            character_maker.set_cohere_adapter(cohere_api_key)
+        else:
+            print("Cohere API Keyが設定されていません。Cohereモデルを使用する場合は、設定タブでAPIキーを入力してください。")
+
     model_files = model_manager.get_model_files()
     
     demo = build_gradio_interface()
