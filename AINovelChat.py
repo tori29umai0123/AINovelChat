@@ -324,13 +324,13 @@ def build_gradio_interface() -> gr.Blocks:
                         if key in config.config['Models']:
                             model_files = ModelManager.get_model_files(MODEL_DIR)
                             if "Cohere API (command-r-plus-08-2024)" not in model_files:
-                                model_files.append("Cohere API (command-r-plus-08-2024)")
+                                model_files.insert(0, "Cohere API (command-r-plus-08-2024)")
                             
                             with gr.Row():
                                 dropdown = gr.Dropdown(
                                     label=key,
                                     choices=model_files,
-                                    value=config.config['Models'][key]
+                                    value=config.config['Models'].get(key, "Cohere API (command-r-plus-08-2024)")
                                 )
                                 refresh_button = gr.Button("更新", size="sm")
                                 status_message = gr.Markdown()
@@ -447,6 +447,9 @@ async def start_gradio() -> None:
 
     config = Config(DEFAULT_INI_FILE)
     settings = Settings._parse_config(config.config)
+
+    if not os.path.exists(MODEL_DIR):
+        os.makedirs(MODEL_DIR)
 
     model_manager = ModelManager(MODEL_DIR)
     
