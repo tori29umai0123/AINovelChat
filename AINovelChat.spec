@@ -7,7 +7,7 @@ datas += collect_data_files('gradio_client')
 
 
 a = Analysis(
-    ['AICharacterChat.py'],
+    ['AINovelChat.py'],
     pathex=[],
     binaries=[],
     datas=datas,
@@ -29,7 +29,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='AICharacterChat',
+    name='AINovelChat',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
