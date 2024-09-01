@@ -4,6 +4,7 @@
 ## ビルド方法
 ```
 pyinstaller "AINovelChat.spec"
+xcopy /E /I /Y utils dist\AINovelChat\utils
 copy AINovelChat_model_DL.cmd dist\AINovelChat\AINovelChat_model_DL.cmd
 copy custom.html dist\AINovelChat\custom.html
 copy AINovelChat_ReadMe.txt dist\AINovelChat\AINovelChat_ReadMe.txt
