@@ -1,18 +1,19 @@
-import cohere
 import os
 import sys
 import time
-import socket
-import gradio as gr
-from llama_cpp import Llama
 import datetime
-from jinja2 import Template
-import configparser
-from functools import partial
-import threading
-import asyncio
 import csv
 from typing import List, Dict, Any, Tuple, Optional
+import gradio as gr
+from functools import partial
+import asyncio
+
+from utils.config import Config
+from utils.character_maker import CharacterMaker
+from utils.model_manager import ModelManager
+from utils.file_utils import FileUtils
+from utils.network_utils import NetworkUtils
+from utils.settings import Settings
 
 # 定数
 DEFAULT_INI_FILE = 'settings.ini'
@@ -25,514 +26,6 @@ if getattr(sys, 'frozen', False):
 else:
     BASE_PATH = os.path.dirname(os.path.abspath(__file__))
     MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
-
-class CohereAdapter:
-    def __init__(self, api_key: str, settings: Dict[str, Any]):
-        self.client = cohere.Client(api_key=api_key)
-        self.chat_history: List[Dict[str, str]] = []
-        self.conversation_id: Optional[str] = None
-        self.settings = settings
-
-    def generate_response(self, message: str, chat_history: Optional[List[Dict[str, str]]] = None, instruction: str = "") -> str:
-        """応答を生成します。chat_historyが指定されない場合は単一のメッセージとして扱い、instructionを含めます。"""
-        system_message = f"{self.settings.get('chat_author_description', '')}\n\n{self.settings.get('chat_instructions', '')}"
-        
-        try:
-            if chat_history is not None:
-                # チャットタブ用
-                if not message.strip():
-                    return "メッセージが空です。有効なメッセージを入力してください。"
-                
-                self.chat_history = chat_history
-                response = self.client.chat(
-                    model="command-r-plus-08-2024",
-                    chat_history=self.chat_history,
-                    message=message,
-                    preamble=system_message
-                )
-                # 会話履歴を更新
-                self.chat_history = response.chat_history
-            else:
-                # 生成タブ用
-                full_message = f"{instruction}\n\n{message}".strip()
-                if not full_message:
-                    return "指示とテキストが両方とも空です。少なくともどちらか一方を入力してください。"
-                
-                response = self.client.chat(
-                    model="command-r-plus-08-2024",
-                    chat_history=[],
-                    message=full_message,
-                    preamble=system_message
-                )
-                # 会話履歴は更新しない（単一のメッセージとして扱うため）
-
-            return response.text
-        except Exception as e:
-            print(f"Cohere API エラー: {str(e)}")
-            return f"エラーが発生しました: {str(e)}"
-
-    def reset_conversation(self):
-        self.chat_history = []
-        self.conversation_id = None
-
-class Config:
-    def __init__(self, filename: str):
-        self.filename = filename
-        self.config = configparser.ConfigParser()
-        self.load()
-
-    def load(self) -> None:
-        """設定ファイルを読み込みます"""
-        self.config.read(self.filename, encoding='utf-8')
-
-    def save(self) -> None:
-        """設定をファイルに保存します"""
-        with open(self.filename, 'w', encoding='utf-8') as configfile:
-            self.config.write(configfile)
-
-    def get(self, section: str, key: str, fallback: Any = None) -> Any:
-        """指定されたセクションとキーの値を取得します"""
-        return self.config.get(section, key, fallback=fallback)
-
-    def set(self, section: str, key: str, value: Any) -> None:
-        """指定されたセクションとキーに値を設定します"""
-        if section not in self.config:
-            self.config[section] = {}
-        self.config[section][key] = str(value)
-
-    def update(self, section: str, key: str, value: Any) -> str:
-        """設定を更新し、ファイルに保存します"""
-        self.set(section, key, value)
-        self.save()
-        return f"設定を更新しました: [{section}] {key} = {value}"
-
-    def get_cohere_api_key(self) -> str:
-        """Cohere APIキーを取得します"""
-        return self.get('Cohere', 'api_key', fallback='')
-
-    def set_cohere_api_key(self, api_key: str) -> None:
-        """Cohere APIキーを設定し保存します"""
-        self.set('Cohere', 'api_key', api_key)
-        self.save()
-
-class FileUtils:
-    @staticmethod
-    def get_files_with_extension(directory: str, extension: str) -> List[str]:
-        """指定されたディレクトリから特定の拡張子を持つファイルのリストを取得します"""
-        return [f for f in os.listdir(directory) if f.endswith(extension)]
-
-class NetworkUtils:
-    @staticmethod
-    def get_ip_address() -> str:
-        """ローカルIPアドレスを取得します"""
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            try:
-                s.connect(('10.255.255.255', 1))
-                return s.getsockname()[0]
-            except Exception:
-                return '127.0.0.1'
-
-    @staticmethod
-    def find_available_port(starting_port: int) -> int:
-        """利用可能なポートを見つけます"""
-        port = starting_port
-        while NetworkUtils.is_port_in_use(port):
-            print(f"ポート {port} は使用中です。次のポートを試します。")
-            port += 1
-        return port
-
-    @staticmethod
-    def is_port_in_use(port: int) -> bool:
-        """指定されたポートが使用中かどうかを確認します"""
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            return s.connect_ex(('localhost', port)) == 0
-
-class ModelManager:
-    def __init__(self, model_dir: str, model_extension: str = MODEL_FILE_EXTENSION):
-        self.model_dir = model_dir
-        self.model_extension = model_extension
-
-    @staticmethod
-    def get_model_files() -> List[str]:
-        """モデルファイルのリストを取得します"""
-        return FileUtils.get_files_with_extension(MODEL_DIR, MODEL_FILE_EXTENSION)
-
-    def update_model_dropdown(self, current_value: str) -> Tuple[List[str], str, str]:
-        """モデルドロップダウンを更新します"""
-        model_files = self.get_model_files()
-        
-        if current_value not in model_files:
-            download_message = f"現在のモデル（{current_value}）が見つかりません。ダウンロードしてください。"
-            model_files.insert(0, current_value)
-        else:
-            download_message = ""
-        
-        return model_files, current_value, download_message
-
-class LlamaAdapter:
-    def __init__(self, model_path: str, params: Dict[str, Any]):
-        self.model_path = model_path
-        self.params = params
-        params_copy = params.copy()
-        if 'model_path' in params_copy:
-            del params_copy['model_path']
-        self.llm = Llama(model_path=model_path, **params_copy)
-
-    def _process_response(self, response: Any) -> str:
-        """LLMの応答を処理します"""
-        if isinstance(response, dict) and "choices" in response:
-            return response["choices"][0]["text"]
-        elif isinstance(response, str):
-            return response
-        else:
-            raise ValueError(f"予期しない応答形式です: {type(response)}")
-
-    def generate_text(self, prompt: str, max_tokens: int) -> str:
-        """テキストを生成します"""
-        try:
-            response = self.llm(
-                prompt,
-                max_tokens=max_tokens,
-                temperature=self.params['temperature'],
-                top_p=self.params['top_p'],
-                top_k=self.params['top_k'],
-                repeat_penalty=self.params['repeat_penalty'],
-                stop=["user:", "・会話履歴", "<END>"]
-            )
-            print(f"LLM応答: {response}")
-            return self._process_response(response)
-        except Exception as e:
-            print(f"LLM生成中にエラーが発生: {str(e)}")
-            raise
-
-    def create_chat_completion(self, messages: List[Dict[str, str]], max_tokens: int) -> Dict[str, Any]:
-        """チャット形式の応答を生成します"""
-        return self.llm.create_chat_completion(
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=self.params['temperature'],
-            top_p=self.params['top_p'],
-            top_k=self.params['top_k'],
-            repeat_penalty=self.params['repeat_penalty']
-        )
-
-class CharacterMaker:
-    def __init__(self, llm_adapter: Any, settings: Dict[str, Any]):
-        self.llm_adapter = llm_adapter
-        self.settings = settings
-        self.history: List[Dict[str, str]] = []
-        self.chat_history: List[Dict[str, str]] = []
-        self.use_chat_format = False
-        self.model_loaded = threading.Event()
-        self.current_model = None
-        self.model_lock = threading.Lock()
-        self.chat_model_settings = None
-        self.gen_model_settings = None
-        self.use_cohere = False
-        self.cohere_adapter = None
-
-    def set_cohere_adapter(self, api_key: str) -> None:
-        """Cohere APIアダプターを設定します"""
-        self.cohere_adapter = CohereAdapter(api_key, self.settings)
-        self.use_cohere = True
-        self.model_loaded.set()  # Cohereの場合は即座にモデルがロードされたとみなす
-
-    def load_model(self, model_type: str) -> None:
-        """モデルをロードします"""
-        if self.use_cohere:
-            print("Cohereモデルを使用中です。ローカルモデルのロードはスキップします。")
-            return
-
-        with self.model_lock:
-            if self.llm_adapter is None:
-                new_settings = self.get_current_settings(model_type)
-                self.reload_model(model_type, new_settings)
-            else:
-                new_settings = self.get_current_settings(model_type)
-                
-                if model_type == 'CHAT':
-                    if self.chat_model_settings == new_settings:
-                        print("CHATモデルの設定に変更がないため、リロードをスキップします。")
-                        return
-                    self.chat_model_settings = new_settings
-                else:  # GEN
-                    if self.gen_model_settings == new_settings:
-                        print("GENモデルの設定に変更がないため、リロードをスキップします。")
-                        return
-                    self.gen_model_settings = new_settings
-
-                if self.are_models_identical():
-                    if self.llm_adapter and self.current_model == 'SHARED':
-                        print("CHATモデルとGENモデルの設定が同じで、既にロードされています。リロードをスキップします。")
-                        return
-                    print("CHATモデルとGENモデルの設定が同じです。共有モデルとしてロードします。")
-                    self.reload_model('SHARED', new_settings)
-                else:
-                    print(f"{model_type}モデルをロードします。")
-                    self.reload_model(model_type, new_settings)
-
-    def reload_model(self, model_type: str, settings: Dict[str, Any]) -> None:
-        """モデルをリロードします"""
-        self.model_loaded.clear()
-
-        try:
-            model_path = os.path.join(MODEL_DIR, settings['model_path'])
-            # 'model_path'キーを削除して、他のパラメータだけを渡す
-            llm_params = {k: v for k, v in settings.items() if k != 'model_path'}
-            self.llm_adapter = LlamaAdapter(model_path, llm_params)
-            self.current_model = model_type
-            self.model_loaded.set()
-            print(f"{model_type}モデルをロードしました。モデルパス: {model_path}、GPUレイヤー数: {settings['n_gpu_layers']}")
-        except Exception as e:
-            print(f"{model_type}モデルのロード中にエラーが発生しました: {e}")
-            import traceback
-            traceback.print_exc()
-            self.model_loaded.set()
-
-    def get_current_settings(self, model_type: str) -> Dict[str, Any]:
-        """現在の設定を取得します"""
-        return {
-            'model_path': self.settings[f'DEFAULT_{model_type.upper()}_MODEL'],
-            'n_gpu_layers': self.settings[f'{model_type.lower()}_n_gpu_layers'],
-            'temperature': self.settings[f'{model_type.lower()}_temperature'],
-            'top_p': self.settings[f'{model_type.lower()}_top_p'],
-            'top_k': self.settings[f'{model_type.lower()}_top_k'],
-            'repeat_penalty': self.settings[f'{model_type.lower()}_rep_pen'],
-            'n_ctx': self.settings[f'{model_type.lower()}_n_ctx']
-        }
-
-    def are_models_identical(self) -> bool:
-        """CHATモデルとGENモデルの設定が同じかどうかを確認します"""
-        return self.chat_model_settings == self.gen_model_settings
-
-    def generate_response(self, input_str: str) -> str:
-        """チャットタブ用の応答を生成します（マルチターン会話）"""
-        if self.use_cohere:
-            return self.cohere_adapter.generate_response(input_str, self.chat_history)
-        else:
-            self.load_model('CHAT')
-            if not self.model_loaded.wait(timeout=30) or not self.llm_adapter:
-                return "モデルのロードに失敗しました。設定を確認してください。"
-            
-            try:
-                if self.use_chat_format:
-                    chat_messages = self._prepare_chat_messages(input_str)
-                    response = self.llm_adapter.create_chat_completion(chat_messages, max_tokens=1000)
-                    res_text = response["choices"][0]["message"]["content"].strip()
-                else:
-                    prompt = self._generate_prompt(input_str)
-                    res_text = self.llm_adapter.generate_text(prompt, max_tokens=1000)
-                
-                if not res_text:
-                    return "申し訳ありません。有効な応答を生成できませんでした。もう一度お試しください。"
-                
-                self._update_history(input_str, res_text)
-                return res_text
-            except Exception as e:
-                print(f"レスポンス生成中にエラーが発生しました: {str(e)}")
-                return f"レスポンス生成中にエラーが発生しました: {str(e)}"
-
-    def generate_text(self, text: str, gen_characters: int, gen_token_multiplier: float, instruction: str) -> str:
-        """生成タブ用のテキストを生成します（会話履歴なし）"""
-        if self.use_cohere:
-            return self.cohere_adapter.generate_response(text, chat_history=None, instruction=instruction)
-        else:
-            self.load_model('GEN')
-            if not self.model_loaded.wait(timeout=30) or not self.llm_adapter:
-                return "モデルのロードに失敗しました。設定を確認してください。"
-            
-            author_description = self.settings.get('gen_author_description', '')
-            max_tokens = int(gen_characters * gen_token_multiplier)
-            
-            try:
-                if self.use_chat_format:
-                    messages = [
-                        {"role": "system", "content": author_description},
-                        {"role": "user", "content": f"{instruction}\n\n{text}"}
-                    ]
-                    
-                    response = self.llm_adapter.create_chat_completion(messages, max_tokens)
-                    generated_text = response["choices"][0]["message"]["content"].strip()
-                else:
-                    prompt = f"{author_description}\n\n指示：{instruction}\n\n入力テキスト：{text}\n\n生成されたテキスト："
-                    generated_text = self.llm_adapter.generate_text(prompt, max_tokens)
-                
-                if not generated_text:
-                    print(f"生成されたテキストが空です。入力: {text[:100]}...")
-                    return "申し訳ありません。有効なテキストを生成できませんでした。もう一度お試しください。"
-                
-                print(f"生成されたテキスト（最初の100文字）: {generated_text[:100]}...")
-                return generated_text
-            except Exception as e:
-                print(f"テキスト生成中にエラーが発生しました: {str(e)}")
-                return f"テキスト生成中にエラーが発生しました: {str(e)}"
-            
-    def set_chat_format(self, use_chat_format: bool) -> None:
-        """チャットフォーマットを設定します"""
-        self.use_chat_format = use_chat_format
-
-    def _prepare_chat_messages(self, input_str: str) -> List[Dict[str, str]]:
-        """チャットメッセージを準備します"""
-        messages = [{"role": "system", "content": self.settings.get('chat_author_description', '')}]
-        messages.extend(self.chat_history)
-        messages.append({"role": "user", "content": input_str})
-        return messages
-
-    def _generate_prompt(self, input_str: str) -> str:
-        """プロンプトを生成します"""
-        prompt_template = """{{chat_author_description}}
-
-{{chat_instructions}}
-
-・キャラクターの回答例
-{% for qa in example_qa %}
-{{qa}}
-{% endfor %}
-
-・会話履歴
-{% for history in histories %}
-user: {{history.user}}
-assistant: {{history.assistant}}
-{% endfor %}
-
-user: {{input_str}}
-assistant:"""
-        
-        template = Template(prompt_template)
-        return template.render(
-            chat_author_description=self.settings.get('chat_author_description', ''),
-            chat_instructions=self.settings.get('chat_instructions', ''),
-            example_qa=self.settings.get('example_qa', []),
-            histories=self.history,
-            input_str=input_str
-        )
-
-    def _update_history(self, input_str: str, res_text: str) -> None:
-        """履歴を更新します"""
-        if self.use_chat_format:
-            self.chat_history.append({"role": "user", "content": input_str})
-            self.chat_history.append({"role": "assistant", "content": res_text})
-        else:
-            self.history.append({"user": input_str, "assistant": res_text})
-
-    def load_character(self, filename: str) -> None:
-        """キャラクター設定をロードします"""
-        if isinstance(filename, list):
-            filename = filename[0] if filename else ""
-        self.settings = Settings.load_from_ini(filename)
-
-    def reset(self) -> None:
-        """履歴をリセットします"""
-        self.history = []
-        self.chat_history = []
-        self.use_chat_format = False
-        if self.use_cohere:
-            self.cohere_adapter.reset_conversation()
-
-class Settings:
-    @staticmethod
-    def _parse_config(config: configparser.ConfigParser) -> Dict[str, Any]:
-        """設定ファイルを解析します"""
-        settings = {}
-        if 'Character' in config:
-            settings['chat_author_description'] = config['Character'].get('chat_author_description', '')
-            settings['chat_instructions'] = config['Character'].get('chat_instructions', '')
-            settings['example_qa'] = config['Character'].get('example_qa', '').split('\n')
-            settings['gen_author_description'] = config['Character'].get('gen_author_description', '')
-        if 'Models' in config:
-            settings['DEFAULT_CHAT_MODEL'] = config['Models'].get('DEFAULT_CHAT_MODEL', '')
-            settings['DEFAULT_GEN_MODEL'] = config['Models'].get('DEFAULT_GEN_MODEL', '')
-        if 'ChatParameters' in config:
-            settings['chat_n_gpu_layers'] = int(config['ChatParameters'].get('n_gpu_layers', '-1'))
-            settings['chat_temperature'] = float(config['ChatParameters'].get('temperature', '0.35'))
-            settings['chat_top_p'] = float(config['ChatParameters'].get('top_p', '0.9'))
-            settings['chat_top_k'] = int(config['ChatParameters'].get('top_k', '40'))
-            settings['chat_rep_pen'] = float(config['ChatParameters'].get('repetition_penalty', '1.2'))
-            settings['chat_n_ctx'] = int(config['ChatParameters'].get('n_ctx', '10000'))
-        if 'GenerateParameters' in config:
-            settings['gen_n_gpu_layers'] = int(config['GenerateParameters'].get('n_gpu_layers', '-1'))
-            settings['gen_temperature'] = float(config['GenerateParameters'].get('temperature', '0.35'))
-            settings['gen_top_p'] = float(config['GenerateParameters'].get('top_p', '0.9'))
-            settings['gen_top_k'] = int(config['GenerateParameters'].get('top_k', '40'))
-            settings['gen_rep_pen'] = float(config['GenerateParameters'].get('repetition_penalty', '1.2'))
-            settings['gen_n_ctx'] = int(config['GenerateParameters'].get('n_ctx', '10000'))
-        return settings
-
-    @staticmethod
-    def save_to_ini(settings: Dict[str, Any], filename: str) -> None:
-        """設定をINIファイルに保存します"""
-        config = configparser.ConfigParser()
-        config['Character'] = {
-            'chat_author_description': settings.get('chat_author_description', ''),
-            'chat_instructions': settings.get('chat_instructions', ''),
-            'example_qa': '\n'.join(settings.get('example_qa', [])),
-            'gen_author_description': settings.get('gen_author_description', '')
-        }
-        config['Models'] = {
-            'DEFAULT_CHAT_MODEL': settings.get('DEFAULT_CHAT_MODEL', ''),
-            'DEFAULT_GEN_MODEL': settings.get('DEFAULT_GEN_MODEL', '')
-        }
-        config['ChatParameters'] = {
-            'n_gpu_layers': str(settings.get('chat_n_gpu_layers', -1)),
-            'temperature': str(settings.get('chat_temperature', 0.35)),
-            'top_p': str(settings.get('chat_top_p', 0.9)),
-            'top_k': str(settings.get('chat_top_k', 40)),
-            'repetition_penalty': str(settings.get('chat_rep_pen', 1.2)),
-            'n_ctx': str(settings.get('chat_n_ctx', 10000))
-        }
-        config['GenerateParameters'] = {
-            'n_gpu_layers': str(settings.get('gen_n_gpu_layers', -1)),
-            'temperature': str(settings.get('gen_temperature', 0.35)),
-            'top_p': str(settings.get('gen_top_p', 0.9)),
-            'top_k': str(settings.get('gen_top_k', 40)),
-            'repetition_penalty': str(settings.get('gen_rep_pen', 1.2)),
-            'n_ctx': str(settings.get('gen_n_ctx', 10000))
-        }
-        with open(filename, 'w', encoding='utf-8') as configfile:
-            config.write(configfile)
-
-    @staticmethod
-    def create_default_ini(filename: str) -> None:
-        """デフォルトのINIファイルを作成します"""
-        default_settings = {
-            'chat_author_description': "あなたは優秀な小説執筆アシスタントです。三幕構造や起承転結、劇中劇などのあらゆる小説理論や小説技法にも通じています。",
-            'chat_instructions': "丁寧な敬語でアイディアのヒアリングしてください。物語をより面白くする提案、キャラクター造形の考察、世界観を膨らませる手伝いなどをお願いします。求められた時以外は基本、聞き役に徹してユーザー自身に言語化させるよう促してください。ユーザーのことは『ユーザー』と呼んでください。",
-            'example_qa': [
-            "user: キャラクターの設定について悩んでいます。",
-            "assistant: キャラクター設定は物語の核となる重要な要素ですね。ユーザーが現在考えているキャラクターについて、簡単にご説明いただけますでしょうか？",
-            "user: どんな設定を説明をしたらいいでしょうか？",
-            "assistant: 例えば、年齢、性別、職業、性格の特徴などから始めていただけると、より具体的なアドバイスができるかと思います。",
-            "user: プロットを書き出したいので、ヒアリングお願いします。",
-            "assistant: 承知しました。ではまず『起承転結』の起から考えていきましょう。",
-            "user: 読者を惹きこむ為のコツを提案してください",
-            "assistant: 諸説ありますが、『謎・ピンチ・意外性』を冒頭に持ってくることが重要だと言います。",
-            "user: プロットが面白いか自信がないので、考察のお手伝いをお願いします。",
-            "assistant: プロットについてコメントをする前に、まずこの物語の『売り』について簡単に説明してください",
-            ],
-            'gen_author_description': 'あなたは新進気鋭の和風伝奇ミステリー小説家で、細やかな筆致と巧みな構成で若い世代にとても人気があります。',
-            'DEFAULT_CHAT_MODEL': 'command-r-plus-08-2024',
-            'DEFAULT_GEN_MODEL': 'command-r-plus-08-2024',
-            'chat_n_gpu_layers': 120,
-            'chat_temperature': 0.35,
-            'chat_top_p': 0.9,
-            'chat_top_k': 40,
-            'chat_rep_pen': 1.2,
-            'chat_n_ctx': 10000,
-            'gen_n_gpu_layers': 120,
-            'gen_temperature': 0.35,
-            'gen_top_p': 0.9,
-            'gen_top_k': 40,
-            'gen_rep_pen': 1.2,
-            'gen_n_ctx': 10000
-        }
-        Settings.save_to_ini(default_settings, filename)
-
-    @staticmethod
-    def load_from_ini(filename: str) -> Dict[str, Any]:
-        """INIファイルから設定をロードします"""
-        config = configparser.ConfigParser()
-        config.read(filename, encoding='utf-8')
-        return Settings._parse_config(config)
 
 # グローバル変数
 character_maker: CharacterMaker = None
@@ -558,10 +51,13 @@ def chat_with_character_stream(message: str, history: List[List[str]]) -> str:
         character_maker.chat_history = [{"role": "user" if i % 2 == 0 else "assistant", "content": msg} for i, msg in enumerate(sum(history, []))]
     else:
         character_maker.history = [{"user": h[0], "assistant": h[1]} for h in history]
+    
+    print(f"チャット生成開始 - 現在のモデル: {character_maker.current_model_info}")
     response = character_maker.generate_response(message)
     for i in range(len(response)):
         time.sleep(0.05)  # 各文字の表示間隔を調整
         yield response[:i+1]
+    print(f"チャット生成完了 - 現在のモデル: {character_maker.current_model_info}")
 
 def clear_chat() -> List:
     """チャットをクリアします"""
@@ -633,48 +129,7 @@ def update_temp_setting(section: str, key: str, value: Any) -> str:
     temp_settings[section][key] = value
     return f"{section}セクションの{key}を更新しました。適用ボタンを押すと設定が保存されます。"
 
-def build_model_settings(config: configparser.ConfigParser, section: str, output: gr.components.Textbox) -> List[gr.components.Component]:
-    """モデル設定のUIを構築します"""
-    model_settings = []
-
-    for key in ['DEFAULT_CHAT_MODEL', 'DEFAULT_GEN_MODEL']:
-        if key in config[section]:
-            with gr.Row():
-                dropdown = gr.Dropdown(
-                    label=key,
-                    choices=ModelManager.get_model_files() + ["command-r-plus-08-2024"],
-                    value=config[section][key]
-                )
-                refresh_button = gr.Button("更新", size="sm")
-                status_message = gr.Markdown()
-            
-            def update_dropdown(current_value):
-                model_files = ModelManager.get_model_files() + ["command-r-plus-08-2024"]
-                if current_value not in model_files:
-                    model_files.insert(0, current_value)
-                    status = f"現在の{key}（{current_value}）が見つかりません。ダウンロードしてください。"
-                else:
-                    status = "モデルリストを更新しました。"
-                return gr.update(choices=model_files, value=current_value), status
-
-            refresh_button.click(
-                fn=update_dropdown,
-                inputs=[dropdown],
-                outputs=[dropdown, status_message]
-            )
-            
-            dropdown.change(
-                partial(update_temp_setting, 'Models', key),
-                inputs=[dropdown],
-                outputs=[output]
-            )
-            
-            model_settings.extend([dropdown, refresh_button, status_message])
-
-    return model_settings
-
 def apply_settings() -> str:
-    """設定を適用します"""
     global temp_settings, character_maker
     settings_changed = False
     
@@ -691,16 +146,13 @@ def apply_settings() -> str:
         return "設定に変更はありませんでした。"
     
     # 設定を更新
-    character_maker.settings = Settings._parse_config(config.config)
-    
-    # モデルのリロードをトリガー（実際のリロードは次の操作時に行われる）
-    character_maker.chat_model_settings = None
-    character_maker.gen_model_settings = None
+    new_settings = Settings._parse_config(config.config)
+    character_maker.update_settings(new_settings)
     
     # temp_settings をクリア
     temp_settings.clear()
     
-    return "設定をiniファイルに保存し、アプリケーションに反映しました。次回の操作時に新しい設定が適用されます。"
+    return "設定をiniファイルに保存し、アプリケーションに反映しました。次回の生成時に新しい設定が適用されます。"
 
 # Gradioインターフェース
 def build_gradio_interface() -> gr.Blocks:
@@ -713,7 +165,7 @@ def build_gradio_interface() -> gr.Blocks:
             <br>各種規約情報は以下のリンク：
             <br>・<a href="https://note.com/eurekachan/n/nd05d6307fead" target="_blank" style="color: #007bff;">EZO-Common-9B-gemma-2-it.Q8_0</a>
             <br>・<a href="https://huggingface.co/datasets/choosealicense/licenses/blob/main/markdown/apache-2.0.md" target="_blank" style="color: #007bff;">Mistral-Nemo-Instruct-2407-Q8_0</a>
-            <br>・<a href="https://docs.cohere.com/docs/c4ai-acceptable-use-policy" target="_blank" style="color: #007bff;">command-r-plus-08-2024</a>
+            <br>・<a href="https://docs.cohere.com/docs/c4ai-acceptable-use-policy" target="_blank" style="color: #007bff;">Cohere API (command-r-plus-08-2024)</a>
         </div>
         """)
 
@@ -852,30 +304,37 @@ def build_gradio_interface() -> gr.Blocks:
                 
                 config = Config(DEFAULT_INI_FILE)
 
+                def update_dropdown(current_value):
+                    model_files = ModelManager.get_model_files(MODEL_DIR)
+                    if "Cohere API (command-r-plus-08-2024)" not in model_files:
+                        model_files.append("Cohere API (command-r-plus-08-2024)")
+                    
+                    if current_value not in model_files:
+                        model_files.insert(0, current_value)
+                        status = f"現在のモデル（{current_value}）が見つかりません。ダウンロードしてください。"
+                    else:
+                        status = "モデルリストを更新しました。"
+                    return gr.update(choices=model_files, value=current_value), status
+
                 with gr.Column():
                     gr.Markdown("### モデル設定")
                     model_settings = []
 
                     for key in ['DEFAULT_CHAT_MODEL', 'DEFAULT_GEN_MODEL']:
                         if key in config.config['Models']:
+                            model_files = ModelManager.get_model_files(MODEL_DIR)
+                            if "Cohere API (command-r-plus-08-2024)" not in model_files:
+                                model_files.append("Cohere API (command-r-plus-08-2024)")
+                            
                             with gr.Row():
                                 dropdown = gr.Dropdown(
                                     label=key,
-                                    choices=ModelManager.get_model_files() + ["command-r-plus-08-2024"],
+                                    choices=model_files,
                                     value=config.config['Models'][key]
                                 )
                                 refresh_button = gr.Button("更新", size="sm")
                                 status_message = gr.Markdown()
                             
-                            def update_dropdown(current_value):
-                                model_files = ModelManager.get_model_files() + ["command-r-plus-08-2024"]
-                                if current_value not in model_files:
-                                    model_files.insert(0, current_value)
-                                    status = f"現在の{key}（{current_value}）が見つかりません。ダウンロードしてください。"
-                                else:
-                                    status = "モデルリストを更新しました。"
-                                return gr.update(choices=model_files, value=current_value), status
-
                             refresh_button.click(
                                 fn=update_dropdown,
                                 inputs=[dropdown],
@@ -890,11 +349,7 @@ def build_gradio_interface() -> gr.Blocks:
                             
                             model_settings.extend([dropdown, refresh_button, status_message])
 
-                    gr.Markdown("""
-                    ### Cohere API設定
-                    注意: 商用目的でcommand-r-plus-08-2024を使用する場合は、Trial KeyではなくProduction Keyを利用してください。
-                    詳細は[Cohereのドキュメント](https://docs.cohere.com/docs/rate-limits)を参照してください。
-                    """)
+                    gr.Markdown("### Cohere API設定")
 
                     cohere_api_key = gr.Textbox(
                         label="Cohere API Key",
@@ -912,10 +367,6 @@ def build_gradio_interface() -> gr.Blocks:
                         inputs=[cohere_api_key],
                         outputs=[output]
                     )
-
-                    def save_cohere_api_key(api_key: str) -> str:
-                        config.set_cohere_api_key(api_key)
-                        return "Cohere API Keyが保存されました。"
 
                     gr.Markdown("### チャット設定")
                     for key in ['chat_author_description', 'chat_instructions', 'example_qa']:
@@ -999,18 +450,18 @@ async def start_gradio() -> None:
 
     model_manager = ModelManager(MODEL_DIR)
     
-    # CharacterMakerを初期化しますが、モデルはロードしません
-    character_maker = CharacterMaker(None, settings)
+    # CharacterMakerを初期化します
+    character_maker = CharacterMaker(None, settings, model_dir=MODEL_DIR)
     
     # Cohere APIキーが設定されている場合は、Cohereアダプターを設定します
-    if settings['DEFAULT_CHAT_MODEL'] == "command-r-plus-08-2024":
+    if settings['DEFAULT_CHAT_MODEL'] == "Cohere API (command-r-plus-08-2024)":
         cohere_api_key = config.get_cohere_api_key()
         if cohere_api_key:
             character_maker.set_cohere_adapter(cohere_api_key)
         else:
             print("Cohere API Keyが設定されていません。Cohereモデルを使用する場合は、設定タブでAPIキーを入力してください。")
 
-    model_files = model_manager.get_model_files()
+    model_files = ModelManager.get_model_files(MODEL_DIR)
     
     demo = build_gradio_interface()
 
