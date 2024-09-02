@@ -21,8 +21,7 @@ class CharacterMaker:
         self.gen_model_settings = None
         self.use_cohere = False
         self.cohere_adapter = None
-        self.cohere_api_key = None
-        
+
     def set_cohere_adapter(self, api_key: str) -> None:
         self.cohere_adapter = CohereAdapter(api_key, self.settings)
         self.use_cohere = True
@@ -41,19 +40,30 @@ class CharacterMaker:
         self.update_cohere_settings()
         print("設定が更新されました。次回の生成時に新しい設定が適用されます。")
 
+    def api_key_changed(self, new_settings):
+        current_api_key = self.settings.get('cohere_api_key')
+        new_api_key = new_settings.get('cohere_api_key')
+        return current_api_key != new_api_key
+
     def load_model(self, model_type: str) -> None:
         new_settings = self.get_current_settings(model_type)
-        
+        api_key_changed = self.api_key_changed(new_settings)
+
         if model_type == 'CHAT':
-            if self.chat_model_settings == new_settings:
+            if self.chat_model_settings == new_settings and not api_key_changed:
                 print(f"{model_type}モデルの設定に変更がないため、リロードをスキップします。")
                 return
             self.chat_model_settings = new_settings
         else:
-            if self.gen_model_settings == new_settings:
+            if self.gen_model_settings == new_settings and not api_key_changed:
                 print(f"{model_type}モデルの設定に変更がないため、リロードをスキップします。")
                 return
             self.gen_model_settings = new_settings
+
+        if api_key_changed:
+            print(f"APIキーが更新されたため、{model_type}モデルをリロードします。")
+        else:
+            print(f"{model_type}モデルをリロードします。")
 
         self.switch_model(model_type)
 
@@ -64,15 +74,21 @@ class CharacterMaker:
         print(f"{model_type}モデルを{new_model}に切り替えます")
 
         if new_model == "Cohere API (command-r-plus-08-2024)":
-            new_cohere_api_key = Settings.get_cohere_api_key(self.settings)
-            if not self.use_cohere or (self.cohere_api_key != new_cohere_api_key):
+            if not self.use_cohere:
                 print("Cohereモデルに切り替えます")
-                if new_cohere_api_key:
-                    self.set_cohere_adapter(new_cohere_api_key)
-                    self.cohere_api_key = new_cohere_api_key
+                settings = Settings.load_from_ini('settings.ini')
+                cohere_api_key = settings.get('cohere_api_key', None)
+                if cohere_api_key:
+                    self.set_cohere_adapter(cohere_api_key)
                 else:
                     print("Cohere API Keyが設定されていません。設定タブでAPIキーを入力してください。")
                     return
+            else:
+                settings = Settings.load_from_ini('settings.ini')
+                new_api_key = settings.get('cohere_api_key', None)
+                if new_api_key and new_api_key != self.cohere_adapter.get_api_key():
+                    print("Cohere APIキーが更新されました。新しいキーで再設定します。")
+                    self.set_cohere_adapter(new_api_key)
         else:
             if self.use_cohere:
                 print("ローカルモデルに切り替えます")
