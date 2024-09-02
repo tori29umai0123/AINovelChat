@@ -111,8 +111,3 @@ class Settings:
         config = configparser.ConfigParser()
         config.read(filename, encoding='utf-8')
         return Settings._parse_config(config)
-
-    @staticmethod
-    def get_cohere_api_key(config: Dict[str, Any]) -> str:
-        """Cohere APIキーを取得します"""
-        return config.get('cohere_api_key', '')
