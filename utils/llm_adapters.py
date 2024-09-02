@@ -53,9 +53,12 @@ class CohereAdapter:
     def __init__(self, api_key: str, settings: Dict[str, Any]):
         self.client = cohere.Client(api_key=api_key)
         self.chat_history: List[Dict[str, str]] = []
+        self.api_key = api_key
         self.settings = settings
 
-    def update_settings(self, new_settings: Dict[str, Any]) -> None:
+    def update_settings(self, new_settings: Dict[str, Any]):
+        if 'cohere_api_key' in new_settings:
+            self.api_key = new_settings['cohere_api_key']
         self.settings.update(new_settings)
 
     def generate_response(self, message: str, chat_history: Optional[List[Dict[str, str]]] = None) -> str:
@@ -98,3 +101,6 @@ class CohereAdapter:
 
     def reset_conversation(self):
         self.chat_history = []
+
+    def get_api_key(self):
+        return self.api_key        
