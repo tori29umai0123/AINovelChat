@@ -21,7 +21,8 @@ class CharacterMaker:
         self.gen_model_settings = None
         self.use_cohere = False
         self.cohere_adapter = None
-
+        self.cohere_api_key = None
+        
     def set_cohere_adapter(self, api_key: str) -> None:
         self.cohere_adapter = CohereAdapter(api_key, self.settings)
         self.use_cohere = True
@@ -62,12 +63,13 @@ class CharacterMaker:
 
         print(f"{model_type}モデルを{new_model}に切り替えます")
 
-        if new_model == "command-r-plus-08-2024(Cohere API)":
-            if not self.use_cohere:
+        if new_model == "Cohere API (command-r-plus-08-2024)":
+            new_cohere_api_key = Settings.get_cohere_api_key(self.settings)
+            if not self.use_cohere or (self.cohere_api_key != new_cohere_api_key):
                 print("Cohereモデルに切り替えます")
-                cohere_api_key = Settings.get_cohere_api_key(self.settings)
-                if cohere_api_key:
-                    self.set_cohere_adapter(cohere_api_key)
+                if new_cohere_api_key:
+                    self.set_cohere_adapter(new_cohere_api_key)
+                    self.cohere_api_key = new_cohere_api_key
                 else:
                     print("Cohere API Keyが設定されていません。設定タブでAPIキーを入力してください。")
                     return
