@@ -1,9 +1,7 @@
 import os
 import sys
 import time
-import datetime
-import csv
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple
 import gradio as gr
 from functools import partial
 import asyncio
@@ -11,10 +9,9 @@ import asyncio
 from utils.config import Config
 from utils.character_maker import CharacterMaker
 from utils.model_manager import ModelManager
-from utils.file_utils import FileUtils
 from utils.network_utils import NetworkUtils
 from utils.settings import Settings
-
+from utils.logger import Logger
 # 定数
 DEFAULT_INI_FILE = 'settings.ini'
 MODEL_FILE_EXTENSION = '.gguf'
@@ -33,16 +30,6 @@ model_files: List[str] = []
 temp_settings: Dict[str, Dict[str, Any]] = {}
 
 # チャット関連関数
-def chat_with_character(message: str, history: List[List[str]]) -> str:
-    """キャラクターとチャットします"""
-    if character_maker.use_cohere:
-        character_maker.chat_history = [{"role": "USER" if i % 2 == 0 else "CHATBOT", "message": msg} for i, msg in enumerate(sum(history, []))]
-    elif character_maker.use_chat_format:
-        character_maker.chat_history = [{"role": "user" if i % 2 == 0 else "assistant", "content": msg} for i, msg in enumerate(sum(history, []))]
-    else:
-        character_maker.history = [{"user": h[0], "assistant": h[1]} for h in history]
-    return character_maker.generate_response(message)
-
 def chat_with_character_stream(message: str, history: List[List[str]]) -> str:
     """キャラクターとのチャットをストリーム形式で行います"""
     if character_maker.use_cohere:
@@ -58,58 +45,8 @@ def chat_with_character_stream(message: str, history: List[List[str]]) -> str:
         time.sleep(0.05)  # 各文字の表示間隔を調整
         yield response[:i+1]
     print(f"チャット生成完了 - 現在のモデル: {character_maker.current_model_info}")
-
-def clear_chat() -> List:
-    """チャットをクリアします"""
-    character_maker.reset()
-    return []
-
 # ログ関連関数
-def list_log_files() -> List[str]:
-    """ログファイルのリストを取得します"""
-    logs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
-    if not os.path.exists(logs_dir):
-        return []
-    return [f for f in os.listdir(logs_dir) if f.endswith('.csv')]
 
-def load_chat_log(file_name: str) -> List[List[str]]:
-    """チャットログを読み込みます"""
-    file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", file_name)
-    chat_history = []
-    with open(file_path, 'r', encoding='utf-8') as csvfile:
-        reader = csv.reader(csvfile)
-        next(reader)  # ヘッダーをスキップ
-        for row in reader:
-            if len(row) == 2:
-                role, message = row
-                if role == "user":
-                    chat_history.append([message, None])
-                elif role == "assistant":
-                    if chat_history and chat_history[-1][1] is None:
-                        chat_history[-1][1] = message
-                    else:
-                        chat_history.append([None, message])
-    return chat_history
-
-def save_chat_log(chat_history: List[List[str]]) -> str:
-    """チャットログを保存します"""
-    current_time = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-    filename = f"{current_time}.csv"
-    logs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
-    if not os.path.exists(logs_dir):
-        os.makedirs(logs_dir)
-    file_path = os.path.join(logs_dir, filename)
-    
-    with open(file_path, 'w', newline='', encoding='utf-8') as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow(["Role", "Message"])
-        for user_message, assistant_message in chat_history:
-            if user_message:
-                writer.writerow(["user", user_message])
-            if assistant_message:
-                writer.writerow(["assistant", assistant_message])
-    
-    return f"チャットログが {file_path} に保存されました。"
 
 def resume_chat_from_log(chat_history: List[List[str]]) -> gr.update:
     """ログからチャットを再開します"""
@@ -201,7 +138,7 @@ def build_gradio_interface() -> gr.Blocks:
                 save_log_output = gr.Textbox(label="保存状態")
                 
                 save_log_button.click(
-                    save_chat_log,
+                    Logger.save_chat_log,
                     inputs=[chatbot],
                     outputs=[save_log_output]
                 )
@@ -219,8 +156,8 @@ def build_gradio_interface() -> gr.Blocks:
                             value="",
                             lines=3
                         )
-                        gen_input_text = gr.Textbox(lines=5, label="処理されるテキストを入力してください")  
-                        gen_input_char_count = gr.HTML(value="文字数: 0")                                        
+                        gen_input_text = gr.Textbox(lines=5, label="処理されるテキストを入力してください")
+                        gen_input_char_count = gr.HTML(value="文字数: 0")
                     with gr.Column(scale=1):
                         gen_characters = gr.Slider(minimum=10, maximum=10000, value=500, step=10, label="出力文字数", info="出力文字数の目安")
                         gen_token_multiplier = gr.Slider(minimum=0.35, maximum=3, value=1.75, step=0.01, label="文字/トークン数倍率", info="文字/最大トークン数倍率")
@@ -264,17 +201,17 @@ def build_gradio_interface() -> gr.Blocks:
             with gr.Tab("ログ閲覧", id="log_view_tab") as log_view_tab:
                 gr.Markdown("## チャットログ閲覧")
                 chatbot_read = gr.Chatbot(elem_id="chatbot_read")
-                log_file_dropdown = gr.Dropdown(label="ログファイル選択", choices=list_log_files())
+                log_file_dropdown = gr.Dropdown(label="ログファイル選択", choices=Logger.list_log_files())
                 refresh_log_list_button = gr.Button("ログファイルリストを更新")
                 resume_chat_button = gr.Button("選択したログから会話を再開")
 
                 def update_log_dropdown() -> gr.update:
                     """ログファイルのドロップダウンを更新します"""
-                    return gr.update(choices=list_log_files())
+                    return gr.update(choices=Logger.list_log_files())
 
                 def load_and_display_chat_log(file_name: str) -> gr.update:
                     """チャットログを読み込んで表示します"""
-                    chat_history = load_chat_log(file_name)
+                    chat_history = Logger.load_chat_log(file_name)
                     return gr.update(value=chat_history)
 
                 refresh_log_list_button.click(
