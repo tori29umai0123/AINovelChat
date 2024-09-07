@@ -312,18 +312,18 @@ class ChatApplicationGUI:
                         )
 
                         gr.Markdown("### チャットパラメータ設定")
-                        for key in ['n_gpu_layers', 'temperature', 'top_p', 'top_k', 'repetition_penalty', 'n_ctx']:
+                        params = {
+                                'n_gpu_layers': {'minimum': -1, 'maximum': 255, 'step': 1, 'cast': int},
+                                'temperature': {'minimum': 0.0, 'maximum': 1.0, 'step': 0.05, 'cast': float},
+                                'top_p': {'minimum': 0.0, 'maximum': 1.0, 'step': 0.05, 'cast': float},
+                                'repetition_penalty': {'minimum': 0.0, 'maximum': 1.0, 'step': 0.05, 'cast': float},
+                                'top_k': {'minimum': 1, 'maximum': 200, 'step': 1, 'cast': int},
+                                'n_ctx': {'minimum': 10000, 'maximum': 100000, 'step': 1000, 'cast': int}
+                            }
+                        for key in params:
                             value = config.get('ChatParameters', key, '0')
-                            if key == 'n_gpu_layers':
-                                input_component = gr.Slider(label=key, value=int(value), minimum=-1, maximum=255, step=1)
-                            elif key in ['temperature', 'top_p', 'repetition_penalty']:
-                                input_component = gr.Slider(label=key, value=float(value), minimum=0.0, maximum=1.0, step=0.05)
-                            elif key == 'top_k':
-                                input_component = gr.Slider(label=key, value=int(value), minimum=1, maximum=200, step=1)
-                            elif key == 'n_ctx':
-                                input_component = gr.Slider(label=key, value=int(value), minimum=10000, maximum=100000, step=1000)
-                            else:
-                                input_component = gr.Textbox(label=key, value=value)
+                            p = params[key]
+                            input_component = gr.Slider(label=key, value=p['cast'](value), minimum=p['minimum'], maximum=p['maximum'], step=p['step'])
 
                             input_component.change(
                                 partial(temp_settings.update, 'ChatParameters', key),
@@ -332,19 +332,11 @@ class ChatApplicationGUI:
                             )
 
                         gr.Markdown("### 文章生成パラメータ設定")
-                        for key in ['n_gpu_layers', 'temperature', 'top_p', 'top_k', 'repetition_penalty', 'n_ctx']:
-                            value = config.get('GenerateParameters', key, '0')
-                            if key == 'n_gpu_layers':
-                                input_component = gr.Slider(label=key, value=int(value), minimum=-1, maximum=255, step=1)
-                            elif key in ['temperature', 'top_p', 'repetition_penalty']:
-                                input_component = gr.Slider(label=key, value=float(value), minimum=0.0, maximum=1.0, step=0.05)
-                            elif key == 'top_k':
-                                input_component = gr.Slider(label=key, value=int(value), minimum=1, maximum=200, step=1)
-                            elif key == 'n_ctx':
-                                input_component = gr.Slider(label=key, value=int(value), minimum=10000, maximum=100000, step=1000)
-                            else:
-                                input_component = gr.Textbox(label=key, value=value)
 
+                        for key in params:
+                            value = config.get('GenerateParameters', key, '0')
+                            p = params[key]
+                            input_component = gr.Slider(label=key, value=p['cast'](value), minimum=p['minimum'], maximum=p['maximum'], step=p['step'])
                             input_component.change(
                                 partial(temp_settings.update, 'GenerateParameters', key),
                                 inputs=[input_component],
