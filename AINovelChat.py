@@ -10,7 +10,7 @@ from utils.config import Config
 from utils.character_maker import CharacterMaker
 from utils.model_manager import ModelManager
 from utils.network_utils import NetworkUtils
-from utils.settings import Settings
+from utils.settings import Settings, TempSettings
 from utils.logger import Logger
 # 定数
 DEFAULT_INI_FILE = 'settings.ini'
@@ -23,9 +23,6 @@ if getattr(sys, 'frozen', False):
 else:
     BASE_PATH = os.path.dirname(os.path.abspath(__file__))
     MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
-
-# グローバル変数
-temp_settings: Dict[str, Dict[str, Any]] = {}
 
 # チャット関連関数
 def chat_with_character_stream(message: str, history: List[List[str]],character_maker: CharacterMaker) -> str:
@@ -50,26 +47,15 @@ def resume_chat_from_log(chat_history: List[List[str]],character_maker: Characte
     """ログからチャットを再開します"""
     # チャットボットのUIを更新
     chatbot_ui = gr.update(value=chat_history)
-    
     # LLMの履歴を更新
     character_maker.history = [{"user": h[0], "assistant": h[1]} for h in chat_history if h[0] is not None and h[1] is not None]
-    
     return chatbot_ui
 
-def update_temp_setting(section: str, key: str, value: Any) -> str:
-    """一時的な設定を更新します"""
-    global temp_settings
-    if section not in temp_settings:
-        temp_settings[section] = {}
-    temp_settings[section][key] = value
-    return f"{section}セクションの{key}を更新しました。適用ボタンを押すと設定が保存されます。"
-
-def apply_settings(character_maker: CharacterMaker) -> str:
-    global temp_settings
+def apply_settings(character_maker: CharacterMaker,temp_settings: TempSettings) -> str:
     settings_changed = False
     
     config = Config(DEFAULT_INI_FILE)
-    
+    temp_settings: Dict[str, Dict[str, Any]] = temp_settings.get()
     for section, settings in temp_settings.items():
         for key, value in settings.items():
             old_value = config.get(section, key)
@@ -90,7 +76,7 @@ def apply_settings(character_maker: CharacterMaker) -> str:
     return "設定をiniファイルに保存し、アプリケーションに反映しました。次回の生成時に新しい設定が適用されます。"
 class ChatApplicationGUI:
 # Gradioインターフェース
-    def build_gradio_interface(model_manager: ModelManager,character_maker: CharacterMaker) -> gr.Blocks:
+    def build_gradio_interface(model_manager: ModelManager,character_maker: CharacterMaker,temp_settings: TempSettings) -> gr.Blocks:
         """Gradioインターフェースを構築します"""
         with gr.Blocks() as iface:
             gr.HTML("""
@@ -278,7 +264,7 @@ class ChatApplicationGUI:
                                 )
 
                                 dropdown.change(
-                                    partial(update_temp_setting, 'Models', key),
+                                    partial(temp_settings.update, 'Models', key),
                                     inputs=[dropdown],
                                     outputs=[output]
                                 )
@@ -311,7 +297,7 @@ class ChatApplicationGUI:
                             else:
                                 input_component = gr.TextArea(label=key, value=config.get('Character', key, ''), lines=5)
                             input_component.change(
-                                partial(update_temp_setting, 'Character', key),
+                                partial(temp_settings.update, 'Character', key),
                                 inputs=[input_component],
                                 outputs=[output]
                             )
@@ -320,7 +306,7 @@ class ChatApplicationGUI:
                         key = 'gen_author_description'
                         input_component = gr.TextArea(label=key, value=config.get('Character', key, ''), lines=5)
                         input_component.change(
-                            partial(update_temp_setting, 'Character', key),
+                            partial(temp_settings.update, 'Character', key),
                             inputs=[input_component],
                             outputs=[output]
                         )
@@ -340,7 +326,7 @@ class ChatApplicationGUI:
                                 input_component = gr.Textbox(label=key, value=value)
 
                             input_component.change(
-                                partial(update_temp_setting, 'ChatParameters', key),
+                                partial(temp_settings.update, 'ChatParameters', key),
                                 inputs=[input_component],
                                 outputs=[output]
                             )
@@ -360,13 +346,13 @@ class ChatApplicationGUI:
                                 input_component = gr.Textbox(label=key, value=value)
 
                             input_component.change(
-                                partial(update_temp_setting, 'GenerateParameters', key),
+                                partial(temp_settings.update, 'GenerateParameters', key),
                                 inputs=[input_component],
                                 outputs=[output]
                             )
 
                         apply_ini_settings_button = gr.Button("設定を適用")
-                        apply_fn = partial(apply_settings, character_maker)
+                        apply_fn = partial(apply_settings, character_maker, temp_settings)
                         apply_ini_settings_button.click(
                             apply_fn,
                             outputs=[output]
@@ -399,8 +385,9 @@ async def start_gradio() -> None:
             character_maker.set_cohere_adapter(cohere_api_key)
         else:
             print("Cohere API Keyが設定されていません。Cohereモデルを使用する場合は、設定タブでAPIキーを入力してください。")
+    temp_settings = TempSettings()
+    demo = ChatApplicationGUI.build_gradio_interface(model_manager,character_maker,temp_settings)
 
-    demo = ChatApplicationGUI.build_gradio_interface(model_manager,character_maker)
 
 
     ip_address = NetworkUtils.get_ip_address()
