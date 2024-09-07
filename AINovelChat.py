@@ -15,7 +15,7 @@ from utils.logger import Logger
 # 定数
 DEFAULT_INI_FILE = 'settings.ini'
 MODEL_FILE_EXTENSION = '.gguf'
-
+LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 # パスの設定
 if getattr(sys, 'frozen', False):
     BASE_PATH = os.path.dirname(sys.executable)
@@ -73,7 +73,7 @@ class ChatApplicationGUI:
         # LLMの履歴を更新
         character_maker.history = [{"user": h[0], "assistant": h[1]} for h in chat_history if h[0] is not None and h[1] is not None]
         return chatbot_ui
-    def build_gradio_interface(model_manager: ModelManager,character_maker: CharacterMaker,temp_settings: TempSettings) -> gr.Blocks:
+    def build_gradio_interface(model_manager: ModelManager,character_maker: CharacterMaker,temp_settings: TempSettings,logger: Logger) -> gr.Blocks:
         """Gradioインターフェースを構築します"""
         with gr.Blocks() as iface:
             gr.HTML("""
@@ -120,7 +120,7 @@ class ChatApplicationGUI:
                     save_log_output = gr.Textbox(label="保存状態")
 
                     save_log_button.click(
-                        Logger.save_chat_log,
+                        logger.save_chat_log,
                         inputs=[chatbot],
                         outputs=[save_log_output]
                     )
@@ -183,17 +183,17 @@ class ChatApplicationGUI:
                 with gr.Tab("ログ閲覧", id="log_view_tab") as log_view_tab:
                     gr.Markdown("## チャットログ閲覧")
                     chatbot_read = gr.Chatbot(elem_id="chatbot_read")
-                    log_file_dropdown = gr.Dropdown(label="ログファイル選択", choices=Logger.list_log_files())
+                    log_file_dropdown = gr.Dropdown(label="ログファイル選択", choices=logger.list_log_files())
                     refresh_log_list_button = gr.Button("ログファイルリストを更新")
                     resume_chat_button = gr.Button("選択したログから会話を再開")
 
                     def update_log_dropdown() -> gr.update:
                         """ログファイルのドロップダウンを更新します"""
-                        return gr.update(choices=Logger.list_log_files())
+                        return gr.update(choices=logger.list_log_files())
 
                     def load_and_display_chat_log(file_name: str) -> gr.update:
                         """チャットログを読み込んで表示します"""
-                        chat_history = Logger.load_chat_log(file_name)
+                        chat_history = logger.load_chat_log(file_name)
                         return gr.update(value=chat_history)
 
                     refresh_log_list_button.click(
@@ -375,7 +375,8 @@ async def start_gradio() -> None:
         else:
             print("Cohere API Keyが設定されていません。Cohereモデルを使用する場合は、設定タブでAPIキーを入力してください。")
     temp_settings = TempSettings()
-    demo = ChatApplicationGUI.build_gradio_interface(model_manager,character_maker,temp_settings)
+    logger = Logger(LOG_DIR)
+    demo = ChatApplicationGUI.build_gradio_interface(model_manager,character_maker,temp_settings,logger)
 
 
 
