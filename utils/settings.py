@@ -111,3 +111,15 @@ class Settings:
         config = configparser.ConfigParser()
         config.read(filename, encoding='utf-8')
         return Settings._parse_config(config)
+
+class TempSettings:
+    def __init__(self):
+        self.__temp_settings: Dict[str, Dict[str, Any]] = {}
+    
+    def update(self, section: str, key: str, value: Any) -> str:
+        if section not in self.__temp_settings:
+            self.__temp_settings[section] = {}
+        self.__temp_settings[section][key] = value
+        return f"{section}セクションの{key}を更新しました。適用ボタンを押すと設定が保存されます。"
+    def get(self) -> Dict[str, Dict[str, Any]]:
+        return self.__temp_settings
