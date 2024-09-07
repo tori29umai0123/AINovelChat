@@ -43,6 +43,8 @@ class CharacterMaker:
     def api_key_changed(self, new_settings):
         current_api_key = self.settings.get('cohere_api_key')
         new_api_key = new_settings.get('cohere_api_key')
+        if new_api_key is None:
+            new_api_key = ""
         return current_api_key != new_api_key
 
     def load_model(self, model_type: str) -> None:
