@@ -24,58 +24,55 @@ else:
     BASE_PATH = os.path.dirname(os.path.abspath(__file__))
     MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 
-# チャット関連関数
-def chat_with_character_stream(message: str, history: List[List[str]],character_maker: CharacterMaker) -> str:
-    """キャラクターとのチャットをストリーム形式で行います"""
-    if character_maker.use_cohere:
-        character_maker.chat_history = [{"role": "USER" if i % 2 == 0 else "CHATBOT", "message": msg} for i, msg in enumerate(sum(history, []))]
-    elif character_maker.use_chat_format:
-        character_maker.chat_history = [{"role": "user" if i % 2 == 0 else "assistant", "content": msg} for i, msg in enumerate(sum(history, []))]
-    else:
-        character_maker.history = [{"user": h[0], "assistant": h[1]} for h in history]
-    
-    print(f"チャット生成開始 - 現在のモデル: {character_maker.current_model_info}")
-    response = character_maker.generate_response(message)
-    for i in range(len(response)):
-        time.sleep(0.05)  # 各文字の表示間隔を調整
-        yield response[:i+1]
-    print(f"チャット生成完了 - 現在のモデル: {character_maker.current_model_info}")
-# ログ関連関数
-
-
-def resume_chat_from_log(chat_history: List[List[str]],character_maker: CharacterMaker) -> gr.update:
-    """ログからチャットを再開します"""
-    # チャットボットのUIを更新
-    chatbot_ui = gr.update(value=chat_history)
-    # LLMの履歴を更新
-    character_maker.history = [{"user": h[0], "assistant": h[1]} for h in chat_history if h[0] is not None and h[1] is not None]
-    return chatbot_ui
-
-def apply_settings(character_maker: CharacterMaker,temp_settings: TempSettings) -> str:
-    settings_changed = False
-    
-    config = Config(DEFAULT_INI_FILE)
-    temp_settings: Dict[str, Dict[str, Any]] = temp_settings.get()
-    for section, settings in temp_settings.items():
-        for key, value in settings.items():
-            old_value = config.get(section, key)
-            if str(value) != str(old_value):
-                config.update(section, key, str(value))
-                settings_changed = True
-    
-    if not settings_changed:
-        return "設定に変更はありませんでした。"
-    
-    # 設定を更新
-    new_settings = Settings._parse_config(config.config)
-    character_maker.update_settings(new_settings)
-    
-    # temp_settings をクリア
-    temp_settings.clear()
-    
-    return "設定をiniファイルに保存し、アプリケーションに反映しました。次回の生成時に新しい設定が適用されます。"
-class ChatApplicationGUI:
 # Gradioインターフェース
+class ChatApplicationGUI:
+    # チャット関連関数
+    def chat_with_character_stream(message: str, history: List[List[str]],character_maker: CharacterMaker) -> str:
+        """キャラクターとのチャットをストリーム形式で行います"""
+        if character_maker.use_cohere:
+            character_maker.chat_history = [{"role": "USER" if i % 2 == 0 else "CHATBOT", "message": msg} for i, msg in enumerate(sum(history, []))]
+        elif character_maker.use_chat_format:
+            character_maker.chat_history = [{"role": "user" if i % 2 == 0 else "assistant", "content": msg} for i, msg in enumerate(sum(history, []))]
+        else:
+            character_maker.history = [{"user": h[0], "assistant": h[1]} for h in history]
+        
+        print(f"チャット生成開始 - 現在のモデル: {character_maker.current_model_info}")
+        response = character_maker.generate_response(message)
+        for i in range(len(response)):
+            time.sleep(0.05)  # 各文字の表示間隔を調整
+            yield response[:i+1]
+        print(f"チャット生成完了 - 現在のモデル: {character_maker.current_model_info}")
+    def apply_settings(character_maker: CharacterMaker,temp_settings: TempSettings) -> str:
+        settings_changed = False
+        
+        config = Config(DEFAULT_INI_FILE)
+        temp_settings: Dict[str, Dict[str, Any]] = temp_settings.get()
+        for section, settings in temp_settings.items():
+            for key, value in settings.items():
+                old_value = config.get(section, key)
+                if str(value) != str(old_value):
+                    config.update(section, key, str(value))
+                    settings_changed = True
+        
+        if not settings_changed:
+            return "設定に変更はありませんでした。"
+        
+        # 設定を更新
+        new_settings = Settings._parse_config(config.config)
+        character_maker.update_settings(new_settings)
+        
+        # temp_settings をクリア
+        temp_settings.clear()
+        
+        return "設定をiniファイルに保存し、アプリケーションに反映しました。次回の生成時に新しい設定が適用されます。"
+    # ログ関連関数
+    def resume_chat_from_log(chat_history: List[List[str]],character_maker: CharacterMaker) -> gr.update:
+        """ログからチャットを再開します"""
+        # チャットボットのUIを更新
+        chatbot_ui = gr.update(value=chat_history)
+        # LLMの履歴を更新
+        character_maker.history = [{"user": h[0], "assistant": h[1]} for h in chat_history if h[0] is not None and h[1] is not None]
+        return chatbot_ui
     def build_gradio_interface(model_manager: ModelManager,character_maker: CharacterMaker,temp_settings: TempSettings) -> gr.Blocks:
         """Gradioインターフェースを構築します"""
         with gr.Blocks() as iface:
@@ -104,7 +101,7 @@ class ChatApplicationGUI:
             with tabs:
                 with gr.Tab("チャット", id="chat_tab") as chat_tab:
                     chatbot = gr.Chatbot(elem_id="chatbot")
-                    chat_fn = partial(chat_with_character_stream, character_maker=character_maker) #
+                    chat_fn = partial(ChatApplicationGUI.chat_with_character_stream, character_maker=character_maker) #
                     gr.ChatInterface(
                         chat_fn,
                         chatbot=chatbot,
@@ -212,7 +209,7 @@ class ChatApplicationGUI:
 
                     def resume_chat_and_switch_tab(chat_history: List[List[str]],character_maker: CharacterMaker) -> Tuple[gr.update, gr.update]:
                         """ログからチャットを再開し、タブを切り替えます"""
-                        chatbot_ui = resume_chat_from_log(chat_history, character_maker)
+                        chatbot_ui = ChatApplicationGUI.resume_chat_from_log(chat_history, character_maker)
                         return chatbot_ui, gr.update(selected="chat_tab")
 
                     resume_chat_button.click(
@@ -344,7 +341,7 @@ class ChatApplicationGUI:
                             )
 
                         apply_ini_settings_button = gr.Button("設定を適用")
-                        apply_fn = partial(apply_settings, character_maker, temp_settings)
+                        apply_fn = partial(ChatApplicationGUI.apply_settings, character_maker, temp_settings)
                         apply_ini_settings_button.click(
                             apply_fn,
                             outputs=[output]
